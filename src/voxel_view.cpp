@@ -2355,9 +2355,9 @@ vec3 voxel_renderer::animated( const void *id, const tripoint_bub_ms &p )
     motion &m = motions[id];
     if( m.start == 0 || m.to != abs ) {
         const tripoint_rel_ms jump = abs - m.to;
-        const bool near = m.start != 0 && std::abs( jump.x() ) <= 2 && std::abs( jump.y() ) <= 2 &&
+        const bool close_by = m.start != 0 && std::abs( jump.x() ) <= 2 && std::abs( jump.y() ) <= 2 &&
                           jump.z() == 0;
-        if( near ) {
+        if( close_by ) {
             const float t = std::clamp( static_cast<float>( now_ms - m.start ) / duration, 0.0f, 1.0f );
             m.from = t >= 1.0f ? m.to : ( t < 0.5f ? m.from : m.to );
         } else {
