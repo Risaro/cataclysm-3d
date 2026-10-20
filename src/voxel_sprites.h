@@ -29,6 +29,8 @@ class sprite_atlas
         void release();
         const sprite_ref *fg( const std::string &id ) const;
         const sprite_ref *bg( const std::string &id ) const;
+        const sprite_ref *subtile( const std::string &id, const std::string &sub, int rotation,
+                                   int &extra_rotation ) const;
         GLuint texture( int sheet ) const;
         int sheet_count() const;
 
@@ -42,6 +44,7 @@ class sprite_atlas
         };
         std::vector<sprite_ref> sprites;
         std::unordered_map<std::string, tile_entry> tiles;
+        std::unordered_map<std::string, std::vector<int>> subtiles;
         std::vector<GLuint> textures;
 };
 

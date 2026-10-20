@@ -64,6 +64,7 @@ void sprite_atlas::release()
     textures.clear();
     sprites.clear();
     tiles.clear();
+    subtiles.clear();
     ok = false;
 }
 
@@ -169,6 +170,20 @@ bool sprite_atlas::load( const std::string &tileset_id )
                     for( const JsonObject sub : t.get_array( "additional_tiles" ) ) {
                         sub.allow_omitted_members();
                         const std::string sub_id = sub.get_string( "id", "" );
+                        if( sub.has_member( "fg" ) ) {
+                            std::vector<int> list;
+                            const JsonValue fgv = sub.get_member( "fg" );
+                            if( fgv.test_array() ) {
+                                for( const JsonValue elem : fgv.get_array() ) {
+                                    list.push_back( first_sprite( elem ) );
+                                }
+                            } else {
+                                list.push_back( first_sprite( fgv ) );
+                            }
+                            for( const std::string &tid : t.get_as_string_array( "id" ) ) {
+                                subtiles[sub_id + "#" + tid] = list;
+                            }
+                        }
                         if( sub_id == "unconnected" || sub_id == "center" ) {
                             tile_entry e;
                             if( sub.has_member( "fg" ) ) {
@@ -211,6 +226,28 @@ const sprite_ref *sprite_atlas::bg( const std::string &id ) const
         return &sprites[it->second.bg];
     }
     return nullptr;
+}
+
+const sprite_ref *sprite_atlas::subtile( const std::string &id, const std::string &sub,
+                                        int rotation, int &extra_rotation ) const
+{
+    extra_rotation = 0;
+    const auto it = subtiles.find( sub + "#" + id );
+    if( it == subtiles.end() || it->second.empty() ) {
+        return nullptr;
+    }
+    const std::vector<int> &list = it->second;
+    int index = 0;
+    if( rotation < static_cast<int>( list.size() ) ) {
+        index = list[rotation];
+    } else {
+        index = list[0];
+        extra_rotation = rotation;
+    }
+    if( index < 0 || index >= static_cast<int>( sprites.size() ) ) {
+        return nullptr;
+    }
+    return &sprites[index];
 }
 
 GLuint sprite_atlas::texture( int sheet ) const
