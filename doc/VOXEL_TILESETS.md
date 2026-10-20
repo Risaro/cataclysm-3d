@@ -1,5 +1,7 @@
 # Voxel tilesets
 
+New to voxel modeling? Start with [VOXEL_MODELING_GUIDE.md](VOXEL_MODELING_GUIDE.md).
+
 The 3D view draws every object with a voxel model. Without a voxel tileset the game uses built-in
 procedural models. A voxel tileset replaces any of them with models made in
 [MagicaVoxel](https://ephtracy.github.io/) or any editor that saves `.vox` files.

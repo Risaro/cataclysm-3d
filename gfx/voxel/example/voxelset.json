@@ -1,0 +1,13 @@
+{
+  "name": "Example voxel tileset",
+  "voxels_per_tile": 8,
+  "models": [
+    {
+      "id": [ "t_tree" ],
+      "files": [ "trees/autumn_a.vox", "trees/autumn_b.vox" ],
+      "random_rotation": true
+    },
+    { "id": "mon_zombie", "file": "monsters/zombie_red.vox" },
+    { "builtin": "chair", "file": "furniture/chair.vox", "tint": true }
+  ]
+}

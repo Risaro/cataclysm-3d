@@ -21,7 +21,9 @@ sun shadows, the game's own light map, smooth movement and 3D effects.
 * **Tileset sprites style** - the ground is textured with your 2D tileset (UltimateCataclysm and
   others) and creatures, items and furniture stand in the world as sprites.
 * **Voxel tilesets** - artists can replace any model with MagicaVoxel `.vox` files. See
-  [doc/VOXEL_TILESETS.md](doc/VOXEL_TILESETS.md).
+  [doc/VOXEL_TILESETS.md](doc/VOXEL_TILESETS.md) and the step by step
+  [doc/VOXEL_MODELING_GUIDE.md](doc/VOXEL_MODELING_GUIDE.md). `gfx/voxel/example` is a small set
+  to learn from.
 
 Controls: hold the middle mouse button and drag to rotate the camera, or use Alt and the arrow
 keys (Alt+Home resets it). The zoom keys move the camera closer. Movement keys follow the camera.
