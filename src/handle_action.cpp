@@ -100,6 +100,7 @@
 #include "veh_type.h"
 #include "vehicle.h"
 #include "visitable.h"
+#include "voxel_view.h"
 #include "vpart_position.h"
 #include "vpart_range.h"
 #include "weather.h"
@@ -448,6 +449,13 @@ input_context game::get_player_input( std::string &action )
             // Animated tiles need periodic redraws to cycle frames
             if( tilecontext->has_animated_tiles() ) {
                 invalidate_main_ui_adaptor();
+            }
+
+            if( voxel_view::animating() ) {
+                invalidate_main_ui_adaptor();
+                ctxt.set_timeout( 16 );
+            } else {
+                ctxt.set_timeout( 125 );
             }
 #endif
 

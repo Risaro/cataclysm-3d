@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_video.h>
 
 #include "avatar.h"
@@ -1261,6 +1262,9 @@ class voxel_renderer
 
         void add( instance_lists &lists, const vm_key &key, const tripoint_bub_ms &p, float lift, float yaw,
                   float light, float desat, float scale = 1.0f, const voxel_rgb &tint = { 255, 255, 255 } );
+        void add_at( instance_lists &lists, const vm_key &key, const vec3 &pos, float lift, float yaw,
+                     float light, float desat, float scale = 1.0f, const voxel_rgb &tint = { 255, 255, 255 } );
+        vec3 animated( const void *id, const tripoint_bub_ms &p );
         void add_style( const tile_style &st, const tripoint_bub_ms &p, float light, float desat,
                         bool furniture );
         const tile_style &terrain_style( const ter_id &t );
@@ -1302,6 +1306,19 @@ class voxel_renderer
         tripoint_bub_ms last_avatar_pos;
         float avatar_yaw = 0.0f;
         uint32_t weather_frame = 0;
+
+        struct motion {
+            tripoint_abs_ms from;
+            tripoint_abs_ms to;
+            uint64_t start = 0;
+            bool seen = false;
+        };
+        std::unordered_map<const void *, motion> motions;
+        uint64_t now_ms = 0;
+
+    public:
+        bool animating = false;
+        std::optional<vec3> avatar_display;
 };
 
 const char *main_vs = R"(#version 330 core
@@ -1595,11 +1612,48 @@ int voxel_renderer::model_for( const vm_key &key )
 void voxel_renderer::add( instance_lists &lists, const vm_key &key, const tripoint_bub_ms &p,
                           float lift, float yaw, float light, float desat, float scale, const voxel_rgb &tint )
 {
+    add_at( lists, key, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) },
+            lift, yaw, light, desat, scale, tint );
+}
+
+vec3 voxel_renderer::animated( const void *id, const tripoint_bub_ms &p )
+{
+    constexpr float duration = 140.0f;
+    map &here = get_map();
+    const tripoint_abs_ms abs = here.get_abs( p );
+    motion &m = motions[id];
+    if( m.start == 0 || m.to != abs ) {
+        const tripoint_rel_ms jump = abs - m.to;
+        const bool near = m.start != 0 && std::abs( jump.x() ) <= 2 && std::abs( jump.y() ) <= 2 &&
+                          jump.z() == 0;
+        if( near ) {
+            const float t = std::clamp( static_cast<float>( now_ms - m.start ) / duration, 0.0f, 1.0f );
+            m.from = t >= 1.0f ? m.to : ( t < 0.5f ? m.from : m.to );
+        } else {
+            m.from = abs;
+        }
+        m.to = abs;
+        m.start = now_ms;
+    }
+    m.seen = true;
+    float t = std::clamp( static_cast<float>( now_ms - m.start ) / duration, 0.0f, 1.0f );
+    if( t < 1.0f && m.from != m.to ) {
+        animating = true;
+    }
+    t = t * t * ( 3.0f - 2.0f * t );
+    const tripoint_rel_ms d = m.to - m.from;
+    return vec3{ static_cast<float>( p.x() ) - d.x() * ( 1.0f - t ), static_cast<float>( p.z() ),
+                 static_cast<float>( p.y() ) - d.y() * ( 1.0f - t ) };
+}
+
+void voxel_renderer::add_at( instance_lists &lists, const vm_key &key, const vec3 &pos, float lift,
+                             float yaw, float light, float desat, float scale, const voxel_rgb &tint )
+{
     const int m = model_for( key );
     instance inst{};
-    inst.x = static_cast<float>( p.x() );
-    inst.y = static_cast<float>( p.z() ) * level_height + lift;
-    inst.z = static_cast<float>( p.y() );
+    inst.x = pos.x;
+    inst.y = pos.y * level_height + lift;
+    inst.z = pos.z;
     inst.yaw = yaw;
     inst.r = tint.r / 255.0f;
     inst.g = tint.g / 255.0f;
@@ -1724,6 +1778,11 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     main_lists.clear();
     shadow_lists.clear();
     drawing_shadow = false;
+    now_ms = SDL_GetTicks();
+    animating = false;
+    for( std::pair<const void *const, motion> &m : motions ) {
+        m.second.seen = false;
+    }
 
     const int x0 = std::max( 0, center.x() - radius );
     const int x1 = std::min( MAPSIZE_X - 1, center.x() + radius );
@@ -1989,11 +2048,16 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     float yaw ) {
         const float light = creature_light( p );
         const float scale = size_scale( ch.get_size() );
-        add( main_lists, k, p, voxel_size, yaw, light, 0.0f, scale );
+        const vec3 pos = animated( &ch, p );
+        if( &ch == &you ) {
+            avatar_display = pos;
+        }
+        add_at( main_lists, k, pos, voxel_size, yaw, light, 0.0f, scale );
         if( const std::optional<vm_key> hk = held_key( ch ) ) {
-            add( main_lists, *hk, p, voxel_size, yaw, light, 0.0f, scale );
+            add_at( main_lists, *hk, pos, voxel_size, yaw, light, 0.0f, scale );
         }
     };
+    avatar_display.reset();
     if( in_view( you_pos ) ) {
         add_character( you, you_pos, character_key( you, rgb( 226, 184, 146 ), rgb( 58, 98, 168 ), 0,
                        false ), avatar_yaw );
@@ -2013,8 +2077,16 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         if( !in_view( p ) || !you.sees( here, mon ) ) {
             continue;
         }
-        add( main_lists, monster_key( mon ), p, voxel_size, face_towards( p, you_pos ),
-             creature_light( p ), 0.0f, size_scale( mon.get_size() ) );
+        add_at( main_lists, monster_key( mon ), animated( &mon, p ), voxel_size, face_towards( p, you_pos ),
+                creature_light( p ), 0.0f, size_scale( mon.get_size() ) );
+    }
+
+    for( auto it = motions.begin(); it != motions.end(); ) {
+        if( it->second.seen ) {
+            ++it;
+        } else {
+            it = motions.erase( it );
+        }
     }
 
     const weather_animation_t &anim = get_weather().weather_id->weather_animation;
@@ -2190,7 +2262,11 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     collect( center, radius, daylight );
     upload_instances( main_lists, shadow_lists );
 
-    const vec3 focus = { center.x() + 0.5f, center.z() * level_height + 0.6f, center.y() + 0.5f };
+    vec3 focus = { center.x() + 0.5f, center.z() * level_height + 0.6f, center.y() + 0.5f };
+    if( avatar_display && center == get_avatar().pos_bub() ) {
+        focus.x = avatar_display->x + 0.5f;
+        focus.z = avatar_display->z + 0.5f;
+    }
     const vec3 offset = { std::sin( cam.yaw ) * std::cos( cam.pitch ), std::sin( cam.pitch ), std::cos( cam.yaw ) * std::cos( cam.pitch ) };
     const vec3 eye = focus + offset * distance;
     const mat4 proj = perspective( 0.7f, static_cast<float>( width ) / static_cast<float>( height ), 0.5f,
@@ -2342,6 +2418,11 @@ void set_overlays( const overlays &state )
     overlay_state = state;
 }
 
+bool animating()
+{
+    return active() && renderer().animating;
+}
+
 bool active()
 {
     return use_tiles && get_option<bool>( "VOXEL_VIEW" ) && !renderer().failed;
@@ -2419,6 +2500,11 @@ namespace voxel_view
 
 void set_overlays( const overlays & )
 {
+}
+
+bool animating()
+{
+    return false;
 }
 
 bool active()
