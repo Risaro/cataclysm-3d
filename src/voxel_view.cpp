@@ -3965,10 +3965,14 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     vec3 eye = focus + offset * view_distance;
     vec3 look = focus;
     if( cam.mode == 2 && follow ) {
-        eye = vec3{ avatar_display->x + 0.5f, avatar_display->y * level_height + 1.45f, avatar_display->z + 0.5f };
+        const vec3 forward{ -std::sin( cam.yaw ), 0.0f, -std::cos( cam.yaw ) };
+        eye = vec3{ avatar_display->x + 0.5f, avatar_display->y * level_height + 1.45f, avatar_display->z + 0.5f } -
+              forward * 0.35f;
         const float q = std::clamp( ( cam.pitch - 0.95f ) * 0.8f + 0.2f, -0.6f, 0.9f );
-        look = eye + vec3{ -std::sin( cam.yaw ) * std::cos( q ), -std::sin( q ), -std::cos( cam.yaw ) * std::cos( q ) };
-        fov = 1.2f;
+        look = eye + vec3{ forward.x * std::cos( q ), -std::sin( q ), forward.z * std::cos( q ) };
+        const float aspect = static_cast<float>( width ) / static_cast<float>( height );
+        const float hfov = static_cast<float>( get_option<int>( "VOXEL_FP_FOV" ) ) * pi / 180.0f;
+        fov = 2.0f * std::atan( std::tan( hfov * 0.5f ) / aspect );
         znear = 0.05f;
     }
     const float zfar = distance * 4.0f + 80.0f;

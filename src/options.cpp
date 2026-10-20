@@ -2641,6 +2641,13 @@ void options_manager::add_options_graphics()
 
         get_option( "VOXEL_CAMERA_MODE" ).setPrerequisite( "VOXEL_VIEW" );
 
+        add( "VOXEL_FP_FOV", page_id, to_translation( "First person field of view" ),
+             to_translation( "Horizontal field of view of the first person camera in degrees." ),
+             60, 120, 100, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_FP_FOV" ).setPrerequisite( "VOXEL_VIEW" );
+
         add( "VOXEL_SSAO", page_id, to_translation( "3D ambient occlusion" ),
              to_translation( "If true, corners and contact points are darkened softly in the 3D view." ),
              true, COPT_CURSES_HIDE

@@ -164,3 +164,9 @@ msgid ""
 "fight."
 msgstr ""
 "Если включено, люди и животные двигают руками и ногами при ходьбе и в бою."
+
+msgid "First person field of view"
+msgstr "Поле зрения от первого лица"
+
+msgid "Horizontal field of view of the first person camera in degrees."
+msgstr "Горизонтальное поле зрения камеры от первого лица в градусах."
