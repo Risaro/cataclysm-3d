@@ -3930,7 +3930,6 @@ void voxel_renderer::add_distant_terrain( const tripoint_bub_ms &you_pos, float 
             vm_key ground;
             ground.kind = vm_kind::omt_ground;
             bool forest = false;
-            bool building = false;
             if( has_any( id, "forest", "swamp" ) ) {
                 ground.color = rgb( 72, 116, 50 );
                 forest = true;
@@ -3944,7 +3943,6 @@ void voxel_renderer::add_distant_terrain( const tripoint_bub_ms &you_pos, float 
                 ground.color = rgb( 205, 185, 130 );
             } else {
                 ground.color = rgb( 96, 120, 74 );
-                building = true;
             }
             const vec3 center_pos{ bx + omt_size * 0.5f - 0.5f, 0.0f, by + omt_size * 0.5f - 0.5f };
             next_anim = { 0.0f, 0.0f, 0.0f, 1.0f / omt_size };
@@ -3964,24 +3962,6 @@ void voxel_renderer::add_distant_terrain( const tripoint_bub_ms &you_pos, float 
                                    by + 2.0f + static_cast<float>( voxel_hash( i, 2, 0, h ) % 20 ) };
                     add_at( main_lists, tree, tp, 0.0f, static_cast<float>( i ), light, 0.0f, 1.6f );
                 }
-            } else if( building ) {
-                vm_key block;
-                block.kind = vm_kind::omt_block;
-                const bool tall = has_any( id, "apartment", "office", "hospital", "mall", "factory", "hotel",
-                                           "tower", "prison", "lab", "school" );
-                block.param = tall ? 1 : 0;
-                static const std::array<voxel_rgb, 5> walls = { {
-                        rgb( 170, 160, 145 ), rgb( 150, 80, 65 ), rgb( 185, 185, 180 ), rgb( 130, 120, 110 ),
-                        rgb( 200, 190, 160 )
-                    }
-                };
-                static const std::array<voxel_rgb, 4> roofs = { {
-                        rgb( 110, 60, 50 ), rgb( 80, 80, 86 ), rgb( 120, 110, 95 ), rgb( 60, 62, 66 )
-                    }
-                };
-                block.color = walls[h % walls.size()];
-                block.color2 = roofs[( h >> 4 ) % roofs.size()];
-                add_at( main_lists, block, center_pos, 0.0f, 0.0f, light, 0.0f, tall ? 20.0f : 14.0f );
             }
         }
     }
