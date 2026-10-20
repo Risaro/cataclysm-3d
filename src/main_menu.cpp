@@ -143,6 +143,9 @@ std::vector<int> main_menu::print_menu_items( const catacurses::window &w_in,
     }
 
     int text_width = utf8_width_notags( text.c_str() );
+    if( getmaxx( w_in ) <= 0 ) {
+        return {};
+    }
     if( text_width > getmaxx( w_in ) ) {
         offset.y -= std::ceil( text_width / getmaxx( w_in ) );
     }
@@ -373,7 +376,9 @@ void main_menu::print_menu( const catacurses::window &w_open, int iSel, const po
 
     const point p_offset( catacurses::getbegx( w_open ), catacurses::getbegy( w_open ) );
 
-    display_sub_menu( iSel, p_offset + point( offsets[iSel], offset.y - 2 ), sel_line );
+    if( iSel >= 0 && iSel < static_cast<int>( offsets.size() ) ) {
+        display_sub_menu( iSel, p_offset + point( offsets[iSel], offset.y - 2 ), sel_line );
+    }
 }
 
 std::vector<std::string> main_menu::load_file( const std::string &path,
