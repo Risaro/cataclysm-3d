@@ -28,6 +28,7 @@ struct overlays {
 bool active();
 void set_overlays( const overlays &state );
 bool animating();
+int animation_interval();
 bool render( const tripoint_bub_ms &center, int width, int height, std::vector<uint8_t> &pixels );
 void orbit( float dx, float dy );
 void rotate_step( int steps );

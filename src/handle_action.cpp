@@ -451,9 +451,10 @@ input_context game::get_player_input( std::string &action )
                 invalidate_main_ui_adaptor();
             }
 
-            if( voxel_view::animating() ) {
+            const int voxel_interval = voxel_view::animation_interval();
+            if( voxel_interval > 0 ) {
                 invalidate_main_ui_adaptor();
-                ctxt.set_timeout( 16 );
+                ctxt.set_timeout( voxel_interval );
             } else {
                 ctxt.set_timeout( 125 );
             }

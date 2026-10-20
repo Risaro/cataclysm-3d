@@ -61,3 +61,54 @@ msgid ""
 msgstr ""
 "Если включено, стены и деревья между камерой и персонажем срезаются, чтобы "
 "никогда его не закрывать."
+
+msgid "3D upper floors"
+msgstr "Верхние этажи в 3D"
+
+msgid ""
+"If true, the floors above you are drawn while you are outdoors, so buildings "
+"show their full height."
+msgstr ""
+"Если включено, на улице рисуются этажи выше вас, и здания видны в полную "
+"высоту."
+
+msgid "3D ambient animation"
+msgstr "Фоновая анимация в 3D"
+
+msgid ""
+"If true, water waves and fire flickers are animated while you wait for input."
+msgstr ""
+"Если включено, волны на воде и мерцание огня анимируются, пока игра ждёт "
+"вашего хода."
+
+msgid "3D shadow quality"
+msgstr "Качество теней в 3D"
+
+msgid "Resolution of the sun shadow map in the 3D view."
+msgstr "Разрешение карты теней от солнца в 3D-виде."
+
+
+
+
+msgid "3D antialiasing"
+msgstr "Сглаживание в 3D"
+
+msgid "Number of multisample antialiasing samples in the 3D view."
+msgstr "Количество сэмплов мультисэмплингового сглаживания в 3D-виде."
+
+
+msgid "3D draw distance"
+msgstr "Дальность прорисовки в 3D"
+
+msgid "How far the 3D view draws, in percent of the default distance."
+msgstr "Насколько далеко рисуется 3D-вид, в процентах от стандартной дальности."
+
+msgid "3D camera angle"
+msgstr "Угол камеры в 3D"
+
+msgid ""
+"Default camera tilt in degrees.  90 looks straight down.  Rotate the camera "
+"with Alt and the arrow keys, reset it with Alt+Home."
+msgstr ""
+"Наклон камеры по умолчанию в градусах.  90 — строго сверху.  Поворачивайте "
+"камеру Alt и стрелками, сбрасывайте Alt+Home."

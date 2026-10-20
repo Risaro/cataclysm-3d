@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <vector>
 
 namespace
 {
@@ -736,7 +737,7 @@ voxel_grid make_furniture( const vm_key &k, uint32_t seed )
 
 voxel_grid make_humanoid( const vm_key &k, uint32_t seed, bool zombie )
 {
-    voxel_grid g( 8, 13, 8 );
+    voxel_grid g( 8, 14, 8 );
     const voxel_rgb skin = k.color;
     const voxel_rgb shirt = k.color2;
     static const std::array<voxel_rgb, 8> pants_palette = { {
@@ -778,7 +779,57 @@ voxel_grid make_humanoid( const vm_key &k, uint32_t seed, bool zombie )
             g.box( 2, 5, 5, 6, 9, 6, rgb( 110, 80, 45 ), 0.08f, seed + 5 );
         }
     }
+    if( zombie ) {
+        switch( k.param ) {
+            case 1:
+                g.box( 1, 5, 2, 7, 9, 6, shirt, 0.08f, seed + 30 );
+                g.box( 2, 5, 1, 6, 8, 2, skin, 0.1f, seed + 31 );
+                break;
+            case 2:
+                g.box( 1, 7, 2, 7, 10, 6, shirt, 0.06f, seed + 30 );
+                g.box( 0, 6, 0, 2, 9, 4, skin, 0.1f, seed + 31 );
+                g.box( 6, 6, 0, 8, 9, 4, skin, 0.1f, seed + 32 );
+                break;
+            case 3:
+                for( int y = 5; y < 9; ++y ) {
+                    for( int x = 2; x < 6; ++x ) {
+                        if( ( x + y ) % 2 == 0 ) {
+                            g.set( x, y, 3, rgb( 220, 215, 195 ) );
+                        } else {
+                            g.clear( x, y, 3 );
+                        }
+                    }
+                }
+                break;
+            case 4:
+                for( int i = 0; i < 6; ++i ) {
+                    const int x = 1 + static_cast<int>( voxel_hash( i, 0, 0, seed ) % 6 );
+                    const int y = 5 + static_cast<int>( voxel_hash( i, 1, 0, seed ) % 8 );
+                    g.set( x, y, 1 + static_cast<int>( voxel_hash( i, 2, 0, seed ) % 5 ), rgb( 120, 200, 255 ) );
+                }
+                break;
+            case 5:
+                for( int i = 0; i < 5; ++i ) {
+                    const int x = 2 + static_cast<int>( voxel_hash( i, 0, 0, seed ) % 4 );
+                    g.box( x, 4 + static_cast<int>( voxel_hash( i, 1, 0, seed ) % 4 ), 2, x + 1, 9, 3, rgb( 150, 220,
+                           60 ) );
+                }
+                break;
+            case 6:
+                g.box( 2, 5, 2, 6, 9, 6, rgb( 80, 95, 70 ), 0.08f, seed + 30 );
+                g.box( 2, 0, 3, 6, 5, 5, rgb( 75, 85, 65 ), 0.06f, seed + 33 );
+                break;
+            case 7:
+                g.box( 2, 0, 3, 6, 9, 5, rgb( 50, 40, 35 ), 0.2f, seed + 30 );
+                break;
+            default:
+                break;
+        }
+    }
     g.box( 2, 9, 2, 6, 13, 6, skin, 0.05f, seed + 6 );
+    if( zombie && k.param == 6 ) {
+        g.box( 1, 12, 1, 7, 14, 7, rgb( 70, 85, 60 ), 0.05f, seed + 34 );
+    }
     g.box( 2, 12, 2, 6, 13, 6, hair, 0.08f, seed + 7 );
     g.box( 2, 10, 5, 6, 12, 6, hair, 0.08f, seed + 8 );
     const voxel_rgb eye = zombie ? rgb( 230, 60, 30 ) : rgb( 30, 30, 40 );
@@ -793,24 +844,94 @@ voxel_grid make_humanoid( const vm_key &k, uint32_t seed, bool zombie )
 
 voxel_grid make_quadruped( const vm_key &k, uint32_t seed )
 {
-    voxel_grid g( 8, 9, 8 );
+    voxel_grid g( 8, 12, 10, 0, 1 );
     const voxel_rgb fur = k.color;
     const voxel_rgb dark = voxel_shade( fur, 0.7f );
-    g.box( 2, 3, 2, 6, 6, 7, fur, 0.12f, seed );
-    g.box( 2, 3, 3, 6, 4, 6, voxel_shade( fur, 1.15f ), 0.06f, seed + 1 );
-    for( int lx : { 2, 5 } ) {
-        for( int lz : { 2, 6 } ) {
-            g.box( lx, 0, lz, lx + 1, 3, lz + 1, dark, 0.06f, seed + 2 );
+    const voxel_rgb eye = rgb( 15, 15, 15 );
+    const int kind = k.param;
+    int leg = 3;
+    int body_x0 = 2;
+    int body_x1 = 6;
+    int body_y0 = 3;
+    int body_y1 = 6;
+    int body_z0 = 3;
+    int body_z1 = 8;
+    if( kind == 1 ) {
+        leg = 2;
+        body_x0 = 3;
+        body_x1 = 5;
+        body_y1 = 5;
+    } else if( kind == 2 || kind == 4 ) {
+        leg = 5;
+        body_y0 = 5;
+        body_y1 = 8;
+        body_z0 = 3;
+        body_z1 = 10;
+    } else if( kind == 3 ) {
+        body_x0 = 1;
+        body_x1 = 7;
+        body_y1 = 7;
+        body_z0 = 3;
+        body_z1 = 10;
+    } else if( kind == 5 ) {
+        leg = 1;
+        body_x0 = 3;
+        body_x1 = 5;
+        body_y0 = 1;
+        body_y1 = 4;
+        body_z0 = 4;
+        body_z1 = 7;
+    } else if( kind == 6 ) {
+        leg = 2;
+        body_x0 = 2;
+        body_x1 = 6;
+        body_y0 = 2;
+        body_y1 = 6;
+    }
+    if( kind != 5 ) {
+        body_y0 = std::max( body_y0, leg );
+    }
+    g.box( body_x0, body_y0, body_z0, body_x1, body_y1, body_z1, fur, 0.12f, seed );
+    g.box( body_x0, body_y0, body_z0 + 1, body_x1, body_y0 + 1, body_z1 - 1, voxel_shade( fur, 1.15f ),
+           0.06f, seed + 1 );
+    for( int lx : { body_x0, body_x1 - 1 } ) {
+        for( int lz : { body_z0, body_z1 - 1 } ) {
+            g.box( lx, 0, lz, lx + 1, body_y0, lz + 1, dark, 0.06f, seed + 2 );
         }
     }
-    g.box( 2, 5, 0, 6, 8, 3, fur, 0.1f, seed + 3 );
-    g.box( 3, 5, 0, 5, 6, 1, voxel_shade( fur, 0.85f ) );
-    g.set( 3, 6, 0, rgb( 20, 20, 20 ) );
-    g.set( 2, 7, 0, rgb( 15, 15, 15 ) );
-    g.set( 5, 7, 0, rgb( 15, 15, 15 ) );
-    g.set( 2, 8, 2, dark );
-    g.set( 5, 8, 2, dark );
-    g.box( 3, 5, 7, 5, 6, 8, dark );
+    const int hy = body_y1 - 1;
+    const int hz = body_z0 - 2;
+    const int hw = kind == 3 ? 2 : 1;
+    g.box( 4 - hw - 1, hy - 1, hz, 4 + hw + 1, hy + 2, hz + 3, fur, 0.1f, seed + 3 );
+    g.box( 3, hy - 1, hz - 1, 5, hy + ( kind == 2 || kind == 4 ? 1 : 0 ), hz, voxel_shade( fur, 0.85f ) );
+    g.set( 3, hy, hz - 1, rgb( 20, 20, 20 ) );
+    g.set( 4 - hw - 1, hy + 1, hz, eye );
+    g.set( 4 + hw, hy + 1, hz, eye );
+    if( kind == 1 || kind == 5 ) {
+        g.box( 3, hy + 2, hz + 1, 4, hy + ( kind == 5 ? 5 : 3 ), hz + 2, dark );
+        g.box( 4, hy + 2, hz + 1, 5, hy + ( kind == 5 ? 5 : 3 ), hz + 2, dark );
+    } else if( kind == 2 ) {
+        const voxel_rgb antler = rgb( 200, 185, 150 );
+        for( int i = 0; i < 3; ++i ) {
+            g.set( 2 - i / 2, hy + 2 + i, hz + 1, antler );
+            g.set( 5 + i / 2, hy + 2 + i, hz + 1, antler );
+        }
+        g.set( 1, hy + 4, hz, antler );
+        g.set( 6, hy + 4, hz, antler );
+    } else if( kind == 6 ) {
+        g.set( 2, hy - 1, hz - 1, rgb( 230, 225, 210 ) );
+        g.set( 5, hy - 1, hz - 1, rgb( 230, 225, 210 ) );
+    } else {
+        g.set( 2, hy + 2, hz + 1, dark );
+        g.set( 5, hy + 2, hz + 1, dark );
+    }
+    if( kind == 1 ) {
+        g.box( 4, body_y1, body_z1 - 1, 5, body_y1 + 3, body_z1, dark );
+    } else if( kind != 3 && kind != 5 ) {
+        g.box( 3, body_y1 - 1, body_z1, 5, body_y1, body_z1 + 1, dark );
+    } else if( kind == 5 ) {
+        g.set( 4, body_y1 - 1, body_z1, rgb( 235, 235, 230 ) );
+    }
     return g;
 }
 
@@ -831,13 +952,36 @@ voxel_grid make_bird( const vm_key &k, uint32_t seed )
 
 voxel_grid make_bug( const vm_key &k, uint32_t seed )
 {
-    voxel_grid g( 8, 5, 8 );
+    voxel_grid g( 8, 6, 8 );
+    const voxel_rgb legc = voxel_shade( k.color, 0.6f );
+    if( k.param == 3 ) {
+        for( int z = 0; z < 8; ++z ) {
+            const int x = 3 + ( z % 4 < 2 ? 0 : 1 );
+            g.box( x - 1, 0, z, x + 1, 2, z + 1, voxel_shade( k.color, z % 2 ? 0.85f : 1.0f ), 0.05f, seed + z );
+            if( z % 2 == 0 ) {
+                g.set( x - 2, 0, z, legc );
+                g.set( x + 1, 0, z, legc );
+            }
+        }
+        g.set( 3, 1, 0, rgb( 200, 30, 30 ) );
+        return g;
+    }
     g.box( 3, 1, 0, 5, 3, 2, voxel_shade( k.color, 0.85f ), 0.08f, seed );
     g.box( 2, 1, 2, 6, 3, 4, k.color, 0.08f, seed + 1 );
     g.sphere( 4.0f, 2.5f, 6.0f, 2.2f, 1.7f, 2.2f, k.color, 0.1f, seed + 2 );
-    for( int lz : { 2, 3, 4 } ) {
-        g.box( 0, 0, lz, 2, 2, lz + 1, voxel_shade( k.color, 0.6f ) );
-        g.box( 6, 0, lz, 8, 2, lz + 1, voxel_shade( k.color, 0.6f ) );
+    const bool spider = k.param == 1;
+    for( int lz : spider ? std::vector<int> { 1, 2, 3, 4 } : std::vector<int> { 2, 3, 4 } ) {
+        g.box( 0, 0, lz, 2, 2, lz + 1, legc );
+        g.box( 6, 0, lz, 8, 2, lz + 1, legc );
+        if( spider ) {
+            g.set( 0, 2, lz, legc );
+            g.set( 7, 2, lz, legc );
+        }
+    }
+    if( k.param == 2 ) {
+        const voxel_rgb wing = rgb( 210, 225, 235 );
+        g.box( 0, 3, 2, 3, 4, 6, wing, 0.0f, 0, true );
+        g.box( 5, 3, 2, 8, 4, 6, wing, 0.0f, 0, true );
     }
     g.set( 3, 2, 0, rgb( 200, 30, 30 ) );
     g.set( 4, 2, 0, rgb( 200, 30, 30 ) );

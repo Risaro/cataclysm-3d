@@ -68,6 +68,8 @@
     X( glUniform1f ) \
     X( glUniform1i ) \
     X( glUniform3f ) \
+    X( glUniform3fv ) \
+    X( glUniform4fv ) \
     X( glUniformMatrix4fv ) \
     X( glUseProgram ) \
     X( glVertexAttribDivisor ) \

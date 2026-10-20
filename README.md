@@ -23,8 +23,15 @@ sun shadows, the game's own light map, smooth movement and 3D effects.
 * **Voxel tilesets** - artists can replace any model with MagicaVoxel `.vox` files. See
   [doc/VOXEL_TILESETS.md](doc/VOXEL_TILESETS.md).
 
-Controls: hold the middle mouse button and drag to rotate the camera, use the zoom keys to move
-closer. Movement keys follow the camera. Options live in Settings, Graphics, Tileset options.
+Controls: hold the middle mouse button and drag to rotate the camera, or use Alt and the arrow
+keys (Alt+Home resets it). The zoom keys move the camera closer. Movement keys follow the camera.
+Walls and trees between the camera and your character are cut away automatically.
+
+Graphics: sun shadows, colored light from fires, flashlights and vehicle lights, animated water and
+fire, upper floors of buildings while you are outdoors, smooth movement, hit flashes and explosion
+shake. Options live in Settings, Graphics, Tileset options: view style, voxel tileset, shadows and
+their quality, antialiasing, draw distance, camera angle, cutaway, upper floors and ambient
+animation.
 
 ## Building
 

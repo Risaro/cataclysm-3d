@@ -2576,6 +2576,59 @@ void options_manager::add_options_graphics()
 
         get_option( "VOXEL_CUTAWAY" ).setPrerequisite( "VOXEL_VIEW" );
 
+        add( "VOXEL_UPPER_FLOORS", page_id, to_translation( "3D upper floors" ),
+             to_translation( "If true, the floors above you are drawn while you are outdoors, so buildings show their full height." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_UPPER_FLOORS" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_AMBIENT_ANIMATION", page_id, to_translation( "3D ambient animation" ),
+             to_translation( "If true, water waves and fire flickers are animated while you wait for input." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_AMBIENT_ANIMATION" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_SHADOW_QUALITY", page_id, to_translation( "3D shadow quality" ),
+             to_translation( "Resolution of the sun shadow map in the 3D view." ),
+        {
+            { "low", to_translation( "Low" ) },
+            { "medium", to_translation( "Medium" ) },
+            { "high", to_translation( "High" ) }
+        },
+        "medium", COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_SHADOW_QUALITY" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_MSAA", page_id, to_translation( "3D antialiasing" ),
+             to_translation( "Number of multisample antialiasing samples in the 3D view." ),
+        {
+            { "1", to_translation( "Off" ) },
+            { "2", no_translation( "2x" ) },
+            { "4", no_translation( "4x" ) },
+            { "8", no_translation( "8x" ) }
+        },
+        "4", COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_MSAA" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_DRAW_DISTANCE", page_id, to_translation( "3D draw distance" ),
+             to_translation( "How far the 3D view draws, in percent of the default distance." ),
+             50, 200, 100, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_DRAW_DISTANCE" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_CAMERA_ANGLE", page_id, to_translation( "3D camera angle" ),
+             to_translation( "Default camera tilt in degrees.  90 looks straight down.  Rotate the camera with Alt and the arrow keys, reset it with Alt+Home." ),
+             25, 89, 55, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_CAMERA_ANGLE" ).setPrerequisite( "VOXEL_VIEW" );
+
         std::vector<id_and_option> voxelsets = { { "builtin", to_translation( "Built-in procedural models" ) } };
         for( const std::pair<std::string, std::string> &vs : list_voxelsets() ) {
             voxelsets.emplace_back( vs.first, no_translation( vs.second ) );

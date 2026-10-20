@@ -56,7 +56,6 @@ namespace
 
 constexpr float level_height = voxel_level_height * voxel_size;
 constexpr float pi = 3.14159265358979f;
-constexpr int shadow_size = 2048;
 
 struct vec3 {
     float x = 0.0f;
@@ -285,6 +284,7 @@ struct tile_style {
 struct camera_state {
     float yaw = 0.0f;
     float pitch = 0.95f;
+    bool initialized = false;
     mat4 view_proj;
     int width = 0;
     int height = 0;
@@ -1119,10 +1119,64 @@ vm_key monster_key( const monster &m )
     k.color = col;
     k.color2 = voxel_shade( col, 0.8f );
     k.variant = static_cast<uint8_t>( h % 3 );
-    if( m.in_species( zombie ) || m.in_species( ghoul ) ) {
+    const auto animal_param = [&id]() -> int {
+        if( has_any( id, "cat", "cougar", "lynx", "bobcat", "panther" ) )
+        {
+            return 1;
+        }
+        if( has_any( id, "deer", "moose", "elk", "caribou" ) )
+        {
+            return 2;
+        }
+        if( has_any( id, "bear" ) )
+        {
+            return 3;
+        }
+        if( has_any( id, "horse", "cow", "bull", "bison", "ox", "mule", "donkey", "pony" ) )
+        {
+            return 4;
+        }
+        if( has_any( id, "rabbit", "squirrel", "rat", "mouse", "groundhog", "beaver", "chipmunk",
+                     "opossum", "raccoon", "mink", "weasel", "skunk", "hare", "vole", "lemming" ) )
+        {
+            return 5;
+        }
+        if( has_any( id, "boar", "pig", "hog", "sow" ) )
+        {
+            return 6;
+        }
+        if( has_any( id, "dog", "wolf", "coyote", "fox", "jackal", "hound" ) )
+        {
+            return 0;
+        }
+        return -1;
+    };
+    if( ( m.in_species( zombie ) || m.in_species( ghoul ) ) && animal_param() >= 0 ) {
+        k.kind = vm_kind::quadruped;
+        k.param = static_cast<uint8_t>( animal_param() );
+        k.color = voxel_mix( col, rgb( 120, 135, 100 ), 0.6f );
+    } else if( m.in_species( zombie ) || m.in_species( ghoul ) ) {
         k.kind = vm_kind::zombie;
         k.color = voxel_mix( col, rgb( 128, 146, 112 ), 0.6f );
         k.color2 = voxel_shade( palette_pick( shirt_palette(), h ), 0.7f );
+        if( has_any( id, "fat", "bloat", "boomer", "gasbag" ) ) {
+            k.param = 1;
+        } else if( has_any( id, "brute", "hulk", "giant", "mass", "smash", "master", "juggernaut" ) ) {
+            k.param = 2;
+        } else if( has_any( id, "skeleton", "skeletal", "bone", "withered" ) ) {
+            k.param = 3;
+        } else if( has_any( id, "shock", "electric", "tesla" ) ) {
+            k.param = 4;
+            k.color = voxel_mix( k.color, rgb( 120, 160, 210 ), 0.4f );
+        } else if( has_any( id, "acid", "spitter", "corrosive", "toxic" ) ) {
+            k.param = 5;
+            k.color = voxel_mix( k.color, rgb( 140, 200, 80 ), 0.4f );
+        } else if( has_any( id, "soldier", "military", "swat", "armor", "riot", "police", "cop" ) ) {
+            k.param = 6;
+        } else if( has_any( id, "burn", "smoke", "scorch", "fire" ) ) {
+            k.param = 7;
+            k.color = voxel_shade( k.color, 0.6f );
+        }
     } else if( m.in_species( human ) || m.in_species( feral ) || m.in_species( cyborg ) ) {
         k.kind = vm_kind::humanoid;
         k.color = palette_pick( skin_palette(), h );
@@ -1130,15 +1184,24 @@ vm_key monster_key( const monster &m )
     } else if( m.in_species( robot ) || m.in_species( robot_flying ) ) {
         k.kind = vm_kind::robot;
         k.color = voxel_mix( col, rgb( 150, 155, 160 ), 0.5f );
-    } else if( m.in_species( bird ) || m.in_species( insect_flying ) ) {
-        k.kind = m.in_species( bird ) ? vm_kind::bird : vm_kind::bug;
-    } else if( m.in_species( insect ) || m.in_species( spider ) || m.in_species( centipede ) ||
-               m.in_species( worm ) ) {
+    } else if( m.in_species( bird ) ) {
+        k.kind = vm_kind::bird;
+    } else if( m.in_species( insect_flying ) ) {
+        k.kind = vm_kind::bug;
+        k.param = 2;
+    } else if( m.in_species( spider ) ) {
+        k.kind = vm_kind::bug;
+        k.param = 1;
+    } else if( m.in_species( centipede ) || m.in_species( worm ) ) {
+        k.kind = vm_kind::bug;
+        k.param = 3;
+    } else if( m.in_species( insect ) ) {
         k.kind = vm_kind::bug;
     } else if( m.in_species( fish ) || m.in_species( amphibian ) ) {
         k.kind = vm_kind::fish;
     } else if( m.in_species( mammal ) || m.in_species( reptile ) ) {
         k.kind = vm_kind::quadruped;
+        k.param = static_cast<uint8_t>( std::max( 0, animal_param() ) );
     } else if( m.in_species( fungus ) || m.in_species( plant ) || m.in_species( leech_plant ) ) {
         k.kind = vm_kind::plant_creature;
     } else {
@@ -1366,6 +1429,11 @@ class voxel_renderer
         void draw_sprites( const mat4 &view, const mat4 &view_proj, const mat4 &light_vp,
                            const vec3 &sun_dir, float daylight, bool use_shadow, const vec3 &focus, float fog_far,
                            const vec3 &fog );
+        void upload_sprites();
+        void draw_sprite_ranges( GLuint program, bool shadow_pass );
+        void draw_sprite_shadows( const mat4 &light_vp, const vec3 &sun_dir );
+        GLuint sprite_shadow_program = 0;
+        std::vector<std::pair<std::pair<int, int>, std::pair<size_t, size_t>>> sprite_ranges;
         bool init_sprites();
         void reset_models();
         void sync_voxelset();
@@ -1427,6 +1495,18 @@ class voxel_renderer
         tripoint_bub_ms last_avatar_pos;
         float avatar_yaw = 0.0f;
         uint32_t weather_frame = 0;
+        int shadow_size = 2048;
+        int max_samples = 4;
+        int wanted_samples = 4;
+        float focus_y = 0.0f;
+        bool have_focus_y = false;
+        std::vector<std::array<float, 4>> light_pos;
+        std::vector<std::array<float, 3>> light_col;
+        std::unordered_map<const void *, std::pair<int, uint64_t>> hp_track;
+        voxel_rgb flash_tint( const Creature &c );
+        void add_light( const tripoint_bub_ms &p, float lift, float radius, float r, float g, float b );
+        void upload_lights( GLuint program );
+        void apply_quality();
 
         struct motion {
             tripoint_abs_ms from;
@@ -1439,6 +1519,7 @@ class voxel_renderer
 
     public:
         bool animating = false;
+        bool ambient = false;
         std::optional<vec3> avatar_display;
 };
 
@@ -1451,6 +1532,7 @@ layout( location = 4 ) in vec4 i_tint;
 layout( location = 5 ) in vec4 i_extra;
 uniform mat4 u_vp;
 uniform mat4 u_light_vp;
+uniform float u_time;
 out vec3 v_color;
 out vec3 v_normal;
 out vec3 v_world;
@@ -1458,6 +1540,7 @@ out vec4 v_shadow;
 out float v_light;
 out float v_emissive;
 out float v_desat;
+out float v_wave;
 void main()
 {
     float c = cos( i_pos.w );
@@ -1465,6 +1548,10 @@ void main()
     vec3 p = ( a_pos - vec3( 0.5, 0.0, 0.5 ) ) * i_extra.x;
     p = vec3( c * p.x - s * p.z, p.y, s * p.x + c * p.z ) + vec3( 0.5, 0.0, 0.5 );
     vec3 world = p + i_pos.xyz;
+    v_wave = i_extra.w;
+    if( i_extra.w > 0.5 ) {
+        world.y += sin( u_time * 1.6 + world.x * 1.1 + world.z * 0.8 ) * 0.035;
+    }
     v_normal = vec3( c * a_normal.x - s * a_normal.z, a_normal.y, s * a_normal.x + c * a_normal.z );
     v_color = a_color.rgb * i_tint.rgb * a_color.a;
     v_light = i_tint.a;
@@ -1484,7 +1571,26 @@ in vec4 v_shadow;
 in float v_light;
 in float v_emissive;
 in float v_desat;
+in float v_wave;
 uniform sampler2DShadow u_shadow;
+uniform float u_shadow_texel;
+uniform vec4 u_lights[24];
+uniform vec3 u_light_colors[24];
+uniform int u_light_count;
+uniform float u_time;
+vec3 point_lights( vec3 n, vec3 p )
+{
+    vec3 sum = vec3( 0.0 );
+    for( int i = 0; i < u_light_count; ++i ) {
+        vec3 d = u_lights[i].xyz - p;
+        float dist = length( d );
+        float att = clamp( 1.0 - dist / u_lights[i].w, 0.0, 1.0 );
+        att *= att;
+        float facing = 0.45 + 0.55 * max( dot( n, d / max( dist, 0.001 ) ), 0.0 );
+        sum += u_light_colors[i] * att * facing;
+    }
+    return sum;
+}
 uniform vec3 u_sun;
 uniform float u_daylight;
 uniform float u_use_shadow;
@@ -1500,7 +1606,7 @@ float shadow_at()
         return 1.0;
     }
     float sum = 0.0;
-    vec2 texel = vec2( 1.0 / 2048.0 );
+    vec2 texel = vec2( u_shadow_texel );
     for( int x = -1; x <= 1; ++x ) {
         for( int y = -1; y <= 1; ++y ) {
             sum += texture( u_shadow, vec3( p.xy + vec2( x, y ) * texel, p.z - 0.0012 ) );
@@ -1515,7 +1621,12 @@ void main()
     float sun = max( dot( n, u_sun ), 0.0 );
     float sh = u_use_shadow > 0.5 ? shadow_at() : 1.0;
     vec3 col = v_color * ( v_light * shape + u_daylight * sun * sh * 0.5 * min( v_light, 1.0 ) );
-    col = max( col, v_color * v_emissive );
+    col += v_color * point_lights( n, v_world ) * ( 1.0 - v_desat );
+    if( v_wave > 0.5 ) {
+        col *= 0.9 + 0.1 * sin( u_time * 2.3 + v_world.x * 2.0 - v_world.z * 1.5 );
+    }
+    float flicker = 0.82 + 0.18 * sin( u_time * 17.0 + v_world.x * 5.0 + v_world.y * 7.0 );
+    col = max( col, v_color * v_emissive * flicker );
     col = vec3( 1.0 ) - exp( -col * 2.1 );
     float g = dot( col, vec3( 0.299, 0.587, 0.114 ) );
     col = mix( col, vec3( g ) * vec3( 0.78, 0.86, 1.05 ), v_desat );
@@ -1544,6 +1655,17 @@ void main()
 const char *shadow_fs = R"(#version 330 core
 void main()
 {
+}
+)";
+
+const char *sprite_shadow_fs = R"(#version 330 core
+in vec2 v_uv;
+uniform sampler2D u_tex;
+void main()
+{
+    if( texture( u_tex, v_uv ).a < 0.5 ) {
+        discard;
+    }
 }
 )";
 
@@ -1606,6 +1728,24 @@ in float v_light;
 in float v_desat;
 uniform sampler2D u_tex;
 uniform sampler2DShadow u_shadow;
+uniform float u_shadow_texel;
+uniform vec4 u_lights[24];
+uniform vec3 u_light_colors[24];
+uniform int u_light_count;
+uniform float u_time;
+vec3 point_lights( vec3 n, vec3 p )
+{
+    vec3 sum = vec3( 0.0 );
+    for( int i = 0; i < u_light_count; ++i ) {
+        vec3 d = u_lights[i].xyz - p;
+        float dist = length( d );
+        float att = clamp( 1.0 - dist / u_lights[i].w, 0.0, 1.0 );
+        att *= att;
+        float facing = 0.45 + 0.55 * max( dot( n, d / max( dist, 0.001 ) ), 0.0 );
+        sum += u_light_colors[i] * att * facing;
+    }
+    return sum;
+}
 uniform int u_mode;
 uniform vec3 u_sun;
 uniform float u_daylight;
@@ -1621,7 +1761,7 @@ float shadow_at()
         return 1.0;
     }
     float sum = 0.0;
-    vec2 texel = vec2( 1.0 / 2048.0 );
+    vec2 texel = vec2( u_shadow_texel );
     for( int x = -1; x <= 1; ++x ) {
         for( int y = -1; y <= 1; ++y ) {
             sum += texture( u_shadow, vec3( p.xy + vec2( x, y ) * texel, p.z - 0.0015 ) );
@@ -1640,6 +1780,7 @@ void main()
     float sun = u_mode == 0 ? 0.55 : max( dot( n, u_sun ), 0.0 );
     float sh = u_use_shadow > 0.5 ? shadow_at() : 1.0;
     vec3 col = t.rgb * ( v_light * shape + u_daylight * sun * sh * 0.45 * min( v_light, 1.0 ) );
+    col += t.rgb * point_lights( u_mode == 0 ? vec3( 0.0, 1.0, 0.0 ) : n, v_world ) * ( 1.0 - v_desat );
     col = vec3( 1.0 ) - exp( -col * 2.1 );
     float g = dot( col, vec3( 0.299, 0.587, 0.114 ) );
     col = mix( col, vec3( g ) * vec3( 0.78, 0.86, 1.05 ), v_desat );
@@ -1736,9 +1877,9 @@ bool voxel_renderer::init()
         return false;
     }
 
-    GLint max_samples = 0;
+    max_samples = 1;
     gl.glGetIntegerv( GL_MAX_SAMPLES, &max_samples );
-    samples = std::clamp( max_samples, 1, 4 );
+    samples = std::clamp( std::min( max_samples, wanted_samples ), 1, 8 );
 
     gl.glGenTextures( 1, &shadow_tex );
     gl.glBindTexture( GL_TEXTURE_2D, shadow_tex );
@@ -1766,7 +1907,8 @@ bool voxel_renderer::init_sprites()
 {
     voxel_gl_api &gl = voxel_gl();
     sprite_program = compile( sprite_vs, sprite_fs );
-    if( !sprite_program ) {
+    sprite_shadow_program = compile( sprite_vs, sprite_shadow_fs );
+    if( !sprite_program || !sprite_shadow_program ) {
         return false;
     }
     gl.glGenBuffers( 1, &sprite_vbo );
@@ -1965,26 +2107,79 @@ bool voxel_renderer::sprite_character( const Character &ch, const vec3 &pos, flo
     return true;
 }
 
-void voxel_renderer::draw_sprites( const mat4 &view, const mat4 &view_proj, const mat4 &light_vp,
-                                   const vec3 &sun_dir, float daylight, bool use_shadow, const vec3 &focus, float fog_far,
-                                   const vec3 &fog )
+void voxel_renderer::upload_sprites()
 {
-    if( sprite_batches.empty() ) {
-        return;
-    }
-    voxel_gl_api &gl = voxel_gl();
+    sprite_ranges.clear();
     std::vector<sprite_instance> all;
-    std::vector<std::pair<std::pair<int, int>, std::pair<size_t, size_t>>> ranges;
     for( const auto &b : sprite_batches ) {
         if( b.second.empty() ) {
             continue;
         }
-        ranges.push_back( { b.first, { all.size(), b.second.size() } } );
+        sprite_ranges.push_back( { b.first, { all.size(), b.second.size() } } );
         all.insert( all.end(), b.second.begin(), b.second.end() );
     }
+    if( all.empty() ) {
+        return;
+    }
+    voxel_gl_api &gl = voxel_gl();
     gl.glBindBuffer( GL_ARRAY_BUFFER, sprite_vbo );
     gl.glBufferData( GL_ARRAY_BUFFER, static_cast<GLsizeiptr>( all.size() * sizeof( sprite_instance ) ),
                      all.data(), GL_STREAM_DRAW );
+}
+
+void voxel_renderer::draw_sprite_ranges( GLuint program, bool shadow_pass )
+{
+    voxel_gl_api &gl = voxel_gl();
+    const GLint mode_loc = gl.glGetUniformLocation( program, "u_mode" );
+    gl.glActiveTexture( GL_TEXTURE0 );
+    for( const auto &r : sprite_ranges ) {
+        const int mode = r.first.first;
+        if( shadow_pass && mode != sprite_billboard ) {
+            continue;
+        }
+        gl.glUniform1i( mode_loc, mode );
+        gl.glBindTexture( GL_TEXTURE_2D, atlas.texture( r.first.second ) );
+        const bool cube = mode == sprite_cube;
+        gl.glBindVertexArray( cube ? cube_vao : quad_vao );
+        gl.glBindBuffer( GL_ARRAY_BUFFER, sprite_vbo );
+        const GLsizei stride = sizeof( sprite_instance );
+        const size_t base = r.second.first * sizeof( sprite_instance );
+        for( GLuint a = 0; a < 4; ++a ) {
+            gl.glVertexAttribPointer( 3 + a, 4, GL_FLOAT, GL_FALSE, stride,
+                                      reinterpret_cast<void *>( base + a * 4 * sizeof( float ) ) );
+        }
+        gl.glDrawArraysInstanced( GL_TRIANGLES, 0, cube ? 30 : 6, static_cast<GLsizei>( r.second.second ) );
+    }
+    gl.glBindVertexArray( 0 );
+}
+
+void voxel_renderer::draw_sprite_shadows( const mat4 &light_vp, const vec3 &sun_dir )
+{
+    if( sprite_ranges.empty() ) {
+        return;
+    }
+    voxel_gl_api &gl = voxel_gl();
+    gl.glUseProgram( sprite_shadow_program );
+    const auto loc = [&gl, this]( const char *name ) {
+        return gl.glGetUniformLocation( sprite_shadow_program, name );
+    };
+    const vec3 right = normalize( cross( sun_dir, vec3{ 0.0f, 1.0f, 0.0f } ) );
+    gl.glUniformMatrix4fv( loc( "u_vp" ), 1, GL_FALSE, light_vp.m.data() );
+    gl.glUniform3f( loc( "u_right" ), right.x, right.y, right.z );
+    gl.glUniform3f( loc( "u_up" ), 0.0f, 1.0f, 0.0f );
+    gl.glUniform3f( loc( "u_toward" ), 0.0f, 0.0f, 0.0f );
+    gl.glUniform1i( loc( "u_tex" ), 0 );
+    draw_sprite_ranges( sprite_shadow_program, true );
+}
+
+void voxel_renderer::draw_sprites( const mat4 &view, const mat4 &view_proj, const mat4 &light_vp,
+                                   const vec3 &sun_dir, float daylight, bool use_shadow, const vec3 &focus, float fog_far,
+                                   const vec3 &fog )
+{
+    if( sprite_ranges.empty() ) {
+        return;
+    }
+    voxel_gl_api &gl = voxel_gl();
     gl.glUseProgram( sprite_program );
     const auto loc = [&gl, this]( const char *name ) {
         return gl.glGetUniformLocation( sprite_program, name );
@@ -2000,28 +2195,13 @@ void voxel_renderer::draw_sprites( const mat4 &view, const mat4 &view_proj, cons
     gl.glUniform3f( loc( "u_focus" ), focus.x, focus.y, focus.z );
     gl.glUniform1f( loc( "u_fog_far" ), fog_far );
     gl.glUniform3f( loc( "u_fog_color" ), fog.x, fog.y, fog.z );
+    upload_lights( sprite_program );
     gl.glActiveTexture( GL_TEXTURE1 );
     gl.glBindTexture( GL_TEXTURE_2D, shadow_tex );
     gl.glUniform1i( loc( "u_shadow" ), 1 );
     gl.glUniform1i( loc( "u_tex" ), 0 );
-    gl.glActiveTexture( GL_TEXTURE0 );
     gl.glDisable( GL_CULL_FACE );
-    for( const auto &r : ranges ) {
-        const int mode = r.first.first;
-        gl.glUniform1i( loc( "u_mode" ), mode );
-        gl.glBindTexture( GL_TEXTURE_2D, atlas.texture( r.first.second ) );
-        const bool cube = mode == sprite_cube;
-        gl.glBindVertexArray( cube ? cube_vao : quad_vao );
-        gl.glBindBuffer( GL_ARRAY_BUFFER, sprite_vbo );
-        const GLsizei stride = sizeof( sprite_instance );
-        const size_t base = r.second.first * sizeof( sprite_instance );
-        for( GLuint a = 0; a < 4; ++a ) {
-            gl.glVertexAttribPointer( 3 + a, 4, GL_FLOAT, GL_FALSE, stride,
-                                      reinterpret_cast<void *>( base + a * 4 * sizeof( float ) ) );
-        }
-        gl.glDrawArraysInstanced( GL_TRIANGLES, 0, cube ? 30 : 6, static_cast<GLsizei>( r.second.second ) );
-    }
-    gl.glBindVertexArray( 0 );
+    draw_sprite_ranges( sprite_program, false );
     gl.glEnable( GL_CULL_FACE );
 }
 
@@ -2144,9 +2324,10 @@ vec3 voxel_renderer::animated( const void *id, const tripoint_bub_ms &p )
     if( t < 1.0f && m.from != m.to ) {
         animating = true;
     }
+    const float bob = m.from != m.to ? std::sin( t * pi ) * 0.07f / level_height : 0.0f;
     t = t * t * ( 3.0f - 2.0f * t );
     const tripoint_rel_ms d = m.to - m.from;
-    return vec3{ static_cast<float>( p.x() ) - d.x() * ( 1.0f - t ), static_cast<float>( p.z() ),
+    return vec3{ static_cast<float>( p.x() ) - d.x() * ( 1.0f - t ), static_cast<float>( p.z() ) + bob,
                  static_cast<float>( p.y() ) - d.y() * ( 1.0f - t ) };
 }
 
@@ -2248,6 +2429,10 @@ void voxel_renderer::add_at( instance_lists &lists, const vm_key &key, const vec
     inst.scale = scale;
     inst.emissive = models[m].emissive ? 1.0f : 0.0f;
     inst.desat = desat;
+    inst.pad = key.kind == vm_kind::water ? 1.0f : 0.0f;
+    if( key.kind == vm_kind::water || key.kind == vm_kind::fire ) {
+        ambient = true;
+    }
     lists.add( m, inst );
 }
 
@@ -2443,6 +2628,9 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     drawing_shadow = false;
     now_ms = SDL_GetTicks();
     animating = false;
+    ambient = false;
+    light_pos.clear();
+    light_col.clear();
     for( std::pair<const void *const, motion> &m : motions ) {
         m.second.seen = false;
     }
@@ -2481,6 +2669,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                         const vehicle &veh = ovp->vehicle();
                         const float veh_yaw = static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f;
                         bool vehicle_sprite = false;
+                        const sprite_ref *veh_sprite = nullptr;
                         if( sprite_style ) {
                             const vpart_display svd = veh.get_display_of_tile( ovp->mount_pos() );
                             if( !svd.id.is_null() ) {
@@ -2489,7 +2678,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                                     vs = find_sprite( "vp_" + svd.id.str(), vpart_looks_like );
                                 }
                                 if( vs ) {
-                                    add_sprite( sprite_flat, *vs, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, veh_yaw, 0.4f, light, 0.0f );
+                                    veh_sprite = vs;
                                     vehicle_sprite = true;
                                 }
                             }
@@ -2543,6 +2732,13 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                             if( vi.has_flag( VPFLAG_CONE_LIGHT ) || vi.has_flag( VPFLAG_WIDE_CONE_LIGHT ) ||
                                 vi.has_flag( VPFLAG_HALF_CIRCLE_LIGHT ) ) {
                                 vk.param |= vmv_light;
+                                if( vp.enabled && !vp.is_broken() ) {
+                                    add_light( p, 0.7f, 9.0f, 0.95f, 0.9f, 0.75f );
+                                }
+                            }
+                            if( ( vi.has_flag( VPFLAG_DOME_LIGHT ) || vi.has_flag( VPFLAG_AISLE_LIGHT ) ||
+                                  vi.has_flag( VPFLAG_CIRCLE_LIGHT ) ) && vp.enabled && !vp.is_broken() ) {
+                                add_light( p, 1.2f, 6.0f, 0.9f, 0.88f, 0.8f );
                             }
                             if( vi.has_flag( "TURRET" ) ) {
                                 vk.param |= vmv_turret;
@@ -2560,7 +2756,15 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                                 vk.color = pc;
                             }
                         }
-                        if( any && !vehicle_sprite ) {
+                        if( any && vehicle_sprite ) {
+                            vk.param &= static_cast<uint8_t>( ~( vmv_seat | vmv_engine | vmv_turret | vmv_light ) );
+                            vk.variant &= static_cast<uint8_t>( ~( vmx_cargo | vmx_tank | vmx_solar ) );
+                            const bool shell = ( vk.param & ( vmv_board | vmv_window ) ) || ( vk.variant & vmx_door );
+                            const float top = ( vk.param & vmv_roof ) ? 1.51f : shell ? 1.385f : 0.51f;
+                            add_sprite( sprite_flat, *veh_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, veh_yaw, top, light,
+                                        0.0f );
+                        }
+                        if( any ) {
                             if( vk.color.r == 0 && vk.color.g == 0 && vk.color.b == 0 ) {
                                 vk.color = rgb( 120, 122, 128 );
                             }
@@ -2646,6 +2850,8 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                             if( has_any( fid, "fire", "flame", "incendiary" ) ) {
                                 fk.kind = vm_kind::fire;
                                 fk.variant = static_cast<uint8_t>( intensity - 1 );
+                                add_light( p, 0.6f, 3.0f + 2.0f * intensity, 1.0f * ( 0.5f + 0.25f * intensity ),
+                                           0.55f * ( 0.5f + 0.25f * intensity ), 0.2f * ( 0.5f + 0.25f * intensity ) );
                             } else if( has_any( fid, "blood", "bile", "gibs", "acid", "slime", "sap", "sludge", "oil",
                                                 "juice", "goo", "mess" ) ) {
                                 fk.kind = vm_kind::splat;
@@ -2775,11 +2981,50 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         if( ce == nullptr && vset ) {
             ce = vset->find_id( base );
         }
-        add_at( main_lists, k, pos, voxel_size, yaw, light, 0.0f, scale, { 255, 255, 255 }, ce );
+        add_at( main_lists, k, pos, voxel_size, yaw, light, 0.0f, scale, flash_tint( ch ), ce );
         if( const std::optional<vm_key> hk = held_key( ch ) ) {
             add_at( main_lists, *hk, pos, voxel_size, yaw, light, 0.0f, scale );
         }
     };
+    const float own_light = you.active_light();
+    if( own_light > 0.0f ) {
+        add_light( you_pos, 1.0f, std::clamp( std::sqrt( own_light ) * 2.0f, 3.0f, 14.0f ), 0.85f, 0.78f,
+                   0.6f );
+    }
+    if( get_option<bool>( "VOXEL_UPPER_FLOORS" ) && here.is_outside( you_pos ) ) {
+        const float cx = std::sin( cam.yaw );
+        const float cz = std::cos( cam.yaw );
+        for( int up = 1; up <= 2; ++up ) {
+            const int z = center.z() + up;
+            if( z > OVERMAP_HEIGHT ) {
+                break;
+            }
+            for( int y = y0; y <= y1; ++y ) {
+                for( int x = x0; x <= x1; ++x ) {
+                    const float dx = static_cast<float>( x - you_pos.x() );
+                    const float dy = static_cast<float>( y - you_pos.y() );
+                    if( dx * dx + dy * dy < 20.0f ) {
+                        continue;
+                    }
+                    const float along = dx * cx + dy * cz;
+                    const float lateral = std::fabs( dx * cz - dy * cx );
+                    if( along > 0.0f && along < 16.0f && lateral < 2.5f + along * 0.5f ) {
+                        continue;
+                    }
+                    const tripoint_bub_ms p( x, y, z );
+                    const ter_id ter = here.ter( p );
+                    const tile_style &ts = terrain_style( ter );
+                    if( ts.no_floor || !ts.draw ) {
+                        continue;
+                    }
+                    const float light = light_value( here.ambient_light_at( p ), lit_level::LIT );
+                    if( !sprite_style || !sprite_terrain( p, ter.id().str(), ts, light, 0.0f ) ) {
+                        add_style( ts, p, light, 0.0f, false );
+                    }
+                }
+            }
+        }
+    }
     avatar_display.reset();
     if( in_view( you_pos ) ) {
         add_character( you, you_pos, character_key( you, rgb( 226, 184, 146 ), rgb( 58, 98, 168 ), 0,
@@ -2809,7 +3054,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
             }
         }
         add_at( main_lists, monster_key( mon ), mpos, voxel_size, face_towards( p, you_pos ),
-                creature_light( p ), 0.0f, size_scale( mon.get_size() ), { 255, 255, 255 },
+                creature_light( p ), 0.0f, size_scale( mon.get_size() ), flash_tint( mon ),
                 find_chain( vset, mon.type->id.str(), monster_looks_like ) );
     }
 
@@ -2817,6 +3062,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         if( it->second.seen ) {
             ++it;
         } else {
+            hp_track.erase( it->first );
             it = motions.erase( it );
         }
     }
@@ -2951,6 +3197,69 @@ void voxel_renderer::draw_pass( instance_lists &lists, bool glass, GLuint progra
     gl.glBindVertexArray( 0 );
 }
 
+voxel_rgb voxel_renderer::flash_tint( const Creature &c )
+{
+    const int hp = c.get_hp();
+    std::pair<int, uint64_t> &e = hp_track[&c];
+    if( e.second == 0 && e.first == 0 ) {
+        e.first = hp;
+        e.second = 1;
+    }
+    if( hp < e.first ) {
+        e.second = now_ms;
+    }
+    e.first = hp;
+    if( e.second > 1 && now_ms - e.second < 260 ) {
+        animating = true;
+        return { 255, 90, 80 };
+    }
+    return { 255, 255, 255 };
+}
+
+void voxel_renderer::add_light( const tripoint_bub_ms &p, float lift, float radius, float r, float g,
+                                float b )
+{
+    light_pos.push_back( { p.x() + 0.5f, p.z() * level_height + lift, p.y() + 0.5f, radius } );
+    light_col.push_back( { r, g, b } );
+}
+
+void voxel_renderer::upload_lights( GLuint program )
+{
+    voxel_gl_api &gl = voxel_gl();
+    const int count = static_cast<int>( std::min<size_t>( light_pos.size(), 24 ) );
+    gl.glUniform1i( gl.glGetUniformLocation( program, "u_light_count" ), count );
+    if( count > 0 ) {
+        gl.glUniform4fv( gl.glGetUniformLocation( program, "u_lights" ), count, light_pos[0].data() );
+        gl.glUniform3fv( gl.glGetUniformLocation( program, "u_light_colors" ), count, light_col[0].data() );
+    }
+    gl.glUniform1f( gl.glGetUniformLocation( program, "u_time" ),
+                    static_cast<float>( now_ms % 1000000 ) / 1000.0f );
+    gl.glUniform1f( gl.glGetUniformLocation( program, "u_shadow_texel" ), 1.0f / shadow_size );
+}
+
+void voxel_renderer::apply_quality()
+{
+    voxel_gl_api &gl = voxel_gl();
+    const std::string q = get_option<std::string>( "VOXEL_SHADOW_QUALITY" );
+    const int wanted_shadow = q == "low" ? 1024 : q == "high" ? 4096 : 2048;
+    if( wanted_shadow != shadow_size ) {
+        shadow_size = wanted_shadow;
+        gl.glBindTexture( GL_TEXTURE_2D, shadow_tex );
+        gl.glTexImage2D( GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, shadow_size, shadow_size, 0,
+                         GL_DEPTH_COMPONENT, GL_FLOAT, nullptr );
+    }
+    wanted_samples = std::stoi( get_option<std::string>( "VOXEL_MSAA" ) );
+    const int s = std::clamp( std::min( max_samples, wanted_samples ), 1, 8 );
+    if( s != samples ) {
+        samples = s;
+        target_w = 0;
+    }
+    if( !cam.initialized ) {
+        cam.pitch = static_cast<float>( get_option<int>( "VOXEL_CAMERA_ANGLE" ) ) * pi / 180.0f;
+        cam.initialized = true;
+    }
+}
+
 bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int height,
                              std::vector<uint8_t> &pixels )
 {
@@ -2973,6 +3282,7 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
         return false;
     }
     voxel_gl_api &gl = voxel_gl();
+    apply_quality();
     if( !ensure_targets( width, height ) ) {
         failed = true;
         if( prev_context ) {
@@ -2983,7 +3293,8 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
 
     const float zoom = static_cast<float>( std::max( uistate.tileset_zoom, 1 ) );
     const float distance = std::clamp( 24.0f * 16.0f / zoom, 6.0f, 110.0f );
-    const int radius = std::clamp( static_cast<int>( distance * 1.25f ) + 10, 16, 62 );
+    const float reach = static_cast<float>( get_option<int>( "VOXEL_DRAW_DISTANCE" ) ) / 100.0f;
+    const int radius = std::clamp( static_cast<int>( ( distance * 1.25f + 10.0f ) * reach ), 12, 64 );
 
     const float hour = to_hours<float>( time_past_midnight( calendar::turn ) );
     const float natural = g->natural_light_level( center.z() );
@@ -2993,12 +3304,47 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
 
     collect( center, radius, daylight );
     upload_instances( main_lists, shadow_lists );
+    upload_sprites();
 
     vec3 focus = { center.x() + 0.5f, center.z() * level_height + 0.6f, center.y() + 0.5f };
     if( avatar_display && center == get_avatar().pos_bub() ) {
         focus.x = avatar_display->x + 0.5f;
         focus.z = avatar_display->z + 0.5f;
     }
+    if( !have_focus_y ) {
+        focus_y = focus.y;
+        have_focus_y = true;
+    } else if( std::fabs( focus.y - focus_y ) > 0.02f ) {
+        focus_y += ( focus.y - focus_y ) * 0.3f;
+        animating = true;
+    } else {
+        focus_y = focus.y;
+    }
+    focus.y = focus_y;
+    if( overlay_state.explosion ) {
+        focus.x += ( voxel_noise( static_cast<int>( now_ms / 30 ), 1, 0, 7 ) - 0.5f ) * 0.3f;
+        focus.z += ( voxel_noise( static_cast<int>( now_ms / 30 ), 2, 0, 7 ) - 0.5f ) * 0.3f;
+    }
+    std::vector<size_t> order( light_pos.size() );
+    for( size_t i = 0; i < order.size(); ++i ) {
+        order[i] = i;
+    }
+    std::sort( order.begin(), order.end(), [&]( size_t a, size_t b ) {
+        const auto d = [&]( size_t i ) {
+            const float dx = light_pos[i][0] - focus.x;
+            const float dz = light_pos[i][2] - focus.z;
+            return dx * dx + dz * dz;
+        };
+        return d( a ) < d( b );
+    } );
+    std::vector<std::array<float, 4>> sorted_pos;
+    std::vector<std::array<float, 3>> sorted_col;
+    for( size_t i = 0; i < order.size() && i < 24; ++i ) {
+        sorted_pos.push_back( light_pos[order[i]] );
+        sorted_col.push_back( light_col[order[i]] );
+    }
+    light_pos = sorted_pos;
+    light_col = sorted_col;
     const vec3 offset = { std::sin( cam.yaw ) * std::cos( cam.pitch ), std::sin( cam.pitch ), std::cos( cam.yaw ) * std::cos( cam.pitch ) };
     const vec3 eye = focus + offset * distance;
     const mat4 proj = perspective( 0.7f, static_cast<float>( width ) / static_cast<float>( height ), 0.5f,
@@ -3037,6 +3383,7 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
                                light_vp.m.data() );
         gl.glDisable( GL_CULL_FACE );
         draw_pass( shadow_lists, false, shadow_program );
+        draw_sprite_shadows( light_vp, sun_dir );
         gl.glEnable( GL_CULL_FACE );
         gl.glDisable( GL_POLYGON_OFFSET_FILL );
     }
@@ -3060,6 +3407,7 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     gl.glUniform1f( gl.glGetUniformLocation( main_program, "u_fog_far" ), static_cast<float>( radius ) );
     gl.glUniform3f( gl.glGetUniformLocation( main_program, "u_fog_color" ), fog.x, fog.y, fog.z );
     gl.glUniform1f( gl.glGetUniformLocation( main_program, "u_alpha" ), 1.0f );
+    upload_lights( main_program );
     gl.glActiveTexture( GL_TEXTURE0 );
     gl.glBindTexture( GL_TEXTURE_2D, shadow_tex );
     gl.glUniform1i( gl.glGetUniformLocation( main_program, "u_shadow" ), 0 );
@@ -3156,6 +3504,20 @@ void set_overlays( const overlays &state )
 bool animating()
 {
     return active() && renderer().animating;
+}
+
+int animation_interval()
+{
+    if( !active() ) {
+        return 0;
+    }
+    if( renderer().animating ) {
+        return 16;
+    }
+    if( renderer().ambient && get_option<bool>( "VOXEL_AMBIENT_ANIMATION" ) ) {
+        return 70;
+    }
+    return 0;
 }
 
 bool active()
@@ -3299,6 +3661,11 @@ void set_overlays( const overlays & )
 bool animating()
 {
     return false;
+}
+
+int animation_interval()
+{
+    return 0;
 }
 
 bool active()
