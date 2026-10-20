@@ -232,7 +232,7 @@ struct instance {
     float pivot_y;
     float pivot_z;
     float swing;
-    float unused;
+    float yscale;
 };
 
 struct gpu_mesh {
@@ -308,6 +308,7 @@ struct camera_state {
 
 camera_state cam;
 voxel_view::overlays overlay_state;
+int g_season = 1;
 
 constexpr voxel_rgb rgb( uint8_t r, uint8_t g, uint8_t b )
 {
@@ -404,7 +405,12 @@ void classify_floor( const std::string &id, const voxel_rgb &base, tile_style &s
     if( has_any( id, "grass", "lawn", "moss", "fungus" ) ) {
         st.material = vm_material::grass;
         st.color = has( id, "dead" ) ? rgb( 132, 120, 70 ) : has( id, "fungus" ) ? rgb( 120, 120,
-                   100 ) : rgb( 80, 128, 52 );
+                   100 ) : g_season == AUTUMN ? rgb( 118, 128, 58 ) : g_season == SPRING ? rgb( 88, 140, 56 ) :
+                   rgb( 80, 128, 52 );
+        if( g_season == WINTER && !has( id, "fungus" ) ) {
+            st.material = vm_material::snow;
+            st.color = rgb( 228, 234, 240 );
+        }
     } else if( has_any( id, "pavement", "asphalt", "road", "parking" ) ) {
         st.material = vm_material::pavement;
         st.color = material_color( st.material, base );
@@ -465,6 +471,10 @@ tile_style classify_terrain( const ter_t &t )
         st.overlay = true;
         st.floor_material = has_any( id, "dirt", "underbrush" ) ? vm_material::dirt : vm_material::grass;
         st.floor_color = material_color( st.floor_material, base );
+        if( g_season == WINTER ) {
+            st.floor_material = vm_material::snow;
+            st.floor_color = rgb( 228, 234, 240 );
+        }
     };
 
     if( t.has_flag( ter_furn_flag::TFLAG_TREE ) || has( id, "t_tree" ) ) {
@@ -473,12 +483,18 @@ tile_style classify_terrain( const ter_t &t )
         st.spin = true;
         st.color = rgb( 70, 122, 46 );
         st.color2 = has( id, "birch" ) ? rgb( 205, 205, 195 ) : rgb( 92, 68, 48 );
+        const bool evergreen = has_any( id, "pine", "spruce", "fir", "hemlock", "cedar", "juniper", "conifer" );
+        if( g_season == WINTER ) {
+            st.material = vm_material::snow;
+        }
         if( has_any( id, "dead", "burnt", "charred" ) ) {
             st.kind = vm_kind::dead_tree;
             st.color2 = rgb( 85, 72, 60 );
-        } else if( has_any( id, "pine", "spruce", "fir", "hemlock", "cedar", "juniper", "conifer" ) ) {
+        } else if( evergreen ) {
             st.kind = vm_kind::pine;
             st.color = rgb( 38, 88, 50 );
+        } else if( g_season == WINTER ) {
+            st.kind = vm_kind::dead_tree;
         } else if( has_any( id, "young", "sapling" ) ) {
             st.kind = vm_kind::young_tree;
         } else {
@@ -500,7 +516,10 @@ tile_style classify_terrain( const ter_t &t )
         st.kind = vm_kind::shrub;
         st.variants = 4;
         st.spin = true;
-        st.color = rgb( 62, 112, 44 );
+        st.color = g_season == WINTER ? rgb( 110, 100, 82 ) : rgb( 62, 112, 44 );
+        if( g_season == WINTER ) {
+            st.material = vm_material::snow;
+        }
         if( has_any( id, "berry", "rose", "hibiscus", "flower" ) ) {
             st.param = 1;
             st.color2 = has( id, "blue" ) ? rgb( 60, 70, 180 ) : rgb( 190, 40, 60 );
@@ -518,7 +537,8 @@ tile_style classify_terrain( const ter_t &t )
         st.kind = vm_kind::tall_grass;
         st.variants = 4;
         st.spin = true;
-        st.color = rgb( 92, 140, 58 );
+        st.color = g_season == WINTER ? rgb( 180, 168, 128 ) : g_season == AUTUMN ? rgb( 150, 140, 70 ) :
+                   rgb( 92, 140, 58 );
         return st;
     }
     if( t.has_flag( ter_furn_flag::TFLAG_DOOR ) || has( id, "door" ) ) {
@@ -1545,6 +1565,9 @@ class voxel_renderer
         bool have_focus_y = false;
         std::vector<std::array<float, 4>> light_pos;
         std::vector<std::array<float, 3>> light_col;
+        std::vector<std::array<float, 4>> light_dir;
+        std::vector<std::array<float, 4>> cached_light_dir;
+        float flash = 0.0f;
         std::unordered_map<const void *, std::pair<int, uint64_t>> hp_track;
         struct ghost {
             vm_key key;
@@ -1558,7 +1581,7 @@ class voxel_renderer
         std::unordered_map<const void *, ghost> visible_monsters;
         std::vector<ghost> dying;
         std::unordered_map<const void *, std::pair<vec3, uint64_t>> lunges;
-        std::array<float, 3> next_anim = { 0.0f, 0.0f, 0.0f };
+        std::array<float, 4> next_anim = { 0.0f, 0.0f, 0.0f, 0.0f };
         bool cache_valid = false;
         scene_key cached_key;
         instance_lists cached_main;
@@ -1604,7 +1627,8 @@ class voxel_renderer
         bool hurt_now( const Creature &c ) const;
         vec3 lunge_offset( const void *id );
         voxel_rgb flash_tint( const Creature &c, const vec3 &pos );
-        void add_light( const tripoint_bub_ms &p, float lift, float radius, float r, float g, float b );
+        void add_light( const tripoint_bub_ms &p, float lift, float radius, float r, float g, float b,
+                        const vec3 &dir = vec3{}, float cutoff = -2.0f );
         void upload_lights( GLuint program );
         void apply_quality();
 
@@ -1612,8 +1636,20 @@ class voxel_renderer
             tripoint_abs_ms from;
             tripoint_abs_ms to;
             uint64_t start = 0;
+            float duration = 140.0f;
             bool seen = false;
         };
+        struct vehicle_motion_state {
+            tripoint_abs_ms from;
+            tripoint_abs_ms to;
+            float from_yaw = 0.0f;
+            float to_yaw = 0.0f;
+            uint64_t start = 0;
+            bool init = false;
+        };
+        std::unordered_map<const void *, vehicle_motion_state> veh_motions;
+        std::unordered_map<const void *, std::pair<vec3, float>> veh_frame;
+        std::pair<vec3, float> vehicle_motion( const vehicle &veh, float yaw );
         std::unordered_map<const void *, motion> motions;
         uint64_t now_ms = 0;
 
@@ -1657,6 +1693,9 @@ void main()
         ln.yz = vec2( ca * ln.y - sa * ln.z, sa * ln.y + ca * ln.z );
     }
     vec3 p = ( lp - vec3( 0.5, 0.0, 0.5 ) ) * i_extra.x;
+    if( i_anim.w > 0.0 ) {
+        p.y *= i_anim.w;
+    }
     p = vec3( c * p.x - s * p.z, p.y, s * p.x + c * p.z ) + vec3( 0.5, 0.0, 0.5 );
     vec3 world = p + i_pos.xyz;
     v_wave = i_extra.w > 0.5 && i_extra.w < 1.5 ? 1.0 : 0.0;
@@ -1691,7 +1730,9 @@ uniform sampler2DShadow u_shadow;
 uniform float u_shadow_texel;
 uniform vec4 u_lights[24];
 uniform vec3 u_light_colors[24];
+uniform vec4 u_light_dirs[24];
 uniform int u_light_count;
+uniform float u_flash;
 uniform float u_time;
 uniform sampler2D u_occ;
 uniform int u_occ_enabled;
@@ -1729,6 +1770,10 @@ vec3 point_lights( vec3 n, vec3 p )
             continue;
         }
         att *= att * light_visible( p + n * 0.06, u_lights[i].xyz );
+        if( u_light_dirs[i].w > -1.5 ) {
+            float cone = dot( normalize( p - u_lights[i].xyz ), u_light_dirs[i].xyz );
+            att *= smoothstep( u_light_dirs[i].w, u_light_dirs[i].w + 0.12, cone );
+        }
         float facing = 0.45 + 0.55 * max( dot( n, d / max( dist, 0.001 ) ), 0.0 );
         sum += u_light_colors[i] * att * facing;
     }
@@ -1765,6 +1810,7 @@ void main()
     float sh = u_use_shadow > 0.5 ? shadow_at() : 1.0;
     vec3 col = v_color * ( v_light * shape + u_daylight * sun * sh * 0.5 * min( v_light, 1.0 ) );
     col += v_color * point_lights( n, v_world ) * ( 1.0 - v_desat );
+    col += v_color * u_flash * 0.9;
     if( v_wave > 0.5 ) {
         col *= 0.9 + 0.1 * sin( u_time * 2.3 + v_world.x * 2.0 - v_world.z * 1.5 );
         col = mix( col, u_fog_color * 1.3 + vec3( 0.04 ), 0.22 );
@@ -1804,6 +1850,9 @@ void main()
         ln.yz = vec2( ca * ln.y - sa * ln.z, sa * ln.y + ca * ln.z );
     }
     vec3 p = ( lp - vec3( 0.5, 0.0, 0.5 ) ) * i_extra.x;
+    if( i_anim.w > 0.0 ) {
+        p.y *= i_anim.w;
+    }
     p = vec3( c * p.x - s * p.z, p.y, s * p.x + c * p.z ) + vec3( 0.5, 0.0, 0.5 );
     gl_Position = u_light_vp * vec4( p + i_pos.xyz, 1.0 );
 }
@@ -2006,7 +2055,9 @@ uniform sampler2DShadow u_shadow;
 uniform float u_shadow_texel;
 uniform vec4 u_lights[24];
 uniform vec3 u_light_colors[24];
+uniform vec4 u_light_dirs[24];
 uniform int u_light_count;
+uniform float u_flash;
 uniform float u_time;
 uniform sampler2D u_occ;
 uniform int u_occ_enabled;
@@ -2044,6 +2095,10 @@ vec3 point_lights( vec3 n, vec3 p )
             continue;
         }
         att *= att * light_visible( p + n * 0.06, u_lights[i].xyz );
+        if( u_light_dirs[i].w > -1.5 ) {
+            float cone = dot( normalize( p - u_lights[i].xyz ), u_light_dirs[i].xyz );
+            att *= smoothstep( u_light_dirs[i].w, u_light_dirs[i].w + 0.12, cone );
+        }
         float facing = 0.45 + 0.55 * max( dot( n, d / max( dist, 0.001 ) ), 0.0 );
         sum += u_light_colors[i] * att * facing;
     }
@@ -2085,6 +2140,7 @@ void main()
     float sh = u_use_shadow > 0.5 ? shadow_at() : 1.0;
     vec3 col = t.rgb * ( v_light * shape + u_daylight * sun * sh * 0.45 * min( v_light, 1.0 ) );
     col += t.rgb * point_lights( u_mode == 0 ? vec3( 0.0, 1.0, 0.0 ) : n, v_world ) * ( 1.0 - v_desat );
+    col += t.rgb * u_flash * 0.9;
     col = vec3( 1.0 ) - exp( -col * 2.1 );
     float g = dot( col, vec3( 0.299, 0.587, 0.114 ) );
     col = mix( col, vec3( g ) * vec3( 0.78, 0.86, 1.05 ), v_desat );
@@ -2647,29 +2703,30 @@ void voxel_renderer::add( instance_lists &lists, const vm_key &key, const tripoi
 
 vec3 voxel_renderer::animated( const void *id, const tripoint_bub_ms &p, float *phase )
 {
-    constexpr float duration = 140.0f;
     map &here = get_map();
     const tripoint_abs_ms abs = here.get_abs( p );
     motion &m = motions[id];
     if( m.start == 0 || m.to != abs ) {
         const tripoint_rel_ms jump = abs - m.to;
-        const bool close_by = m.start != 0 && std::abs( jump.x() ) <= 2 && std::abs( jump.y() ) <= 2 &&
+        const bool close_by = m.start != 0 && std::abs( jump.x() ) <= 40 && std::abs( jump.y() ) <= 40 &&
                           jump.z() == 0;
         if( close_by ) {
-            const float t = std::clamp( static_cast<float>( now_ms - m.start ) / duration, 0.0f, 1.0f );
+            const float t = std::clamp( static_cast<float>( now_ms - m.start ) / m.duration, 0.0f, 1.0f );
             m.from = t >= 1.0f ? m.to : ( t < 0.5f ? m.from : m.to );
         } else {
             m.from = abs;
         }
+        m.duration = std::abs( jump.x() ) <= 1 && std::abs( jump.y() ) <= 1 ? 140.0f : 220.0f;
         m.to = abs;
         m.start = now_ms;
     }
     m.seen = true;
-    float t = std::clamp( static_cast<float>( now_ms - m.start ) / duration, 0.0f, 1.0f );
+    float t = std::clamp( static_cast<float>( now_ms - m.start ) / m.duration, 0.0f, 1.0f );
     if( t < 1.0f && m.from != m.to ) {
         animating = true;
     }
-    const float bob = m.from != m.to ? std::sin( t * pi ) * 0.07f / level_height : 0.0f;
+    const float bob = m.from != m.to && m.duration < 200.0f ? std::sin( t * pi ) * 0.07f / level_height :
+                      0.0f;
     if( phase ) {
         *phase = m.from != m.to && t < 1.0f ? t : -1.0f;
     }
@@ -2787,7 +2844,8 @@ void voxel_renderer::add_at( instance_lists &lists, const vm_key &key, const vec
     inst.pivot_y = next_anim[0];
     inst.pivot_z = next_anim[1];
     inst.swing = next_anim[2];
-    next_anim = { 0.0f, 0.0f, 0.0f };
+    inst.yscale = next_anim[3];
+    next_anim = { 0.0f, 0.0f, 0.0f, 0.0f };
     if( key.kind == vm_kind::water || key.kind == vm_kind::fire ) {
         ambient = true;
     }
@@ -2868,6 +2926,16 @@ void voxel_renderer::add_style( const tile_style &st, const tripoint_bub_ms &p, 
     k.color2 = st.color2;
     k.variant = st.variants > 1 ? static_cast<uint8_t>( st.variant + h % st.variants ) : st.variant;
     k.param = st.param;
+    if( g_season == AUTUMN && ( st.kind == vm_kind::tree || st.kind == vm_kind::young_tree ||
+                                st.kind == vm_kind::shrub ) ) {
+        static const std::array<voxel_rgb, 4> autumn = { {
+                rgb( 200, 120, 40 ), rgb( 180, 60, 35 ), rgb( 215, 175, 55 ), rgb( 120, 130, 50 )
+            }
+        };
+        k.color = autumn[( h >> 12 ) % autumn.size()];
+    } else if( g_season == SPRING && st.kind == vm_kind::tree && st.param == 0 && ( h >> 9 ) % 3 == 0 ) {
+        k.param = 5;
+    }
     if( st.oriented ) {
         k.param = orientation_at( p );
     }
@@ -2987,6 +3055,13 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     avatar &you = get_avatar();
     const visibility_variables &cache = here.get_visibility_variables_cache();
     sync_voxelset();
+    const int season_now = static_cast<int>( season_of_year( calendar::turn ) );
+    if( season_now != g_season ) {
+        g_season = season_now;
+        ter_styles.clear();
+        furn_styles.clear();
+        cache_valid = false;
+    }
     cutaway = get_option<bool>( "VOXEL_CUTAWAY" ) && cam.mode != 2;
     if( get_option<bool>( "VOXEL_WIND" ) && center.z() >= 0 ) {
         const weather_manager &weather = get_weather();
@@ -3019,6 +3094,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     ambient = false;
     light_pos.clear();
     light_col.clear();
+    light_dir.clear();
     for( std::pair<const void *const, motion> &m : motions ) {
         m.second.seen = false;
     }
@@ -3043,10 +3119,12 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         sprite_batches = cached_sprites;
         light_pos = cached_light_pos;
         light_col = cached_light_col;
+        light_dir = cached_light_dir;
         ambient = cached_ambient;
         fire_tiles = cached_fires;
     } else {
         fire_tiles.clear();
+        veh_frame.clear();
         occ_data.assign( static_cast<size_t>( MAPSIZE_X ) * MAPSIZE_Y, 0 );
         room_active = cutaway && !here.is_outside( you_pos );
         if( room_active ) {
@@ -3084,7 +3162,10 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                         const optional_vpart_position ovp = here.veh_at( p );
                         if( ovp ) {
                             const vehicle &veh = ovp->vehicle();
-                            const float veh_yaw = static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f;
+                            const std::pair<vec3, float> vmo = vehicle_motion( veh,
+                                                               static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f );
+                            const float veh_yaw = vmo.second;
+                            const vec3 veh_pos = vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) } + vmo.first;
                             bool vehicle_sprite = false;
                             const sprite_ref *veh_sprite = nullptr;
                             if( sprite_style ) {
@@ -3150,7 +3231,11 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                                     vi.has_flag( VPFLAG_HALF_CIRCLE_LIGHT ) ) {
                                     vk.param |= vmv_light;
                                     if( vp.enabled && !vp.is_broken() ) {
-                                        add_light( p, 0.7f, 9.0f, 0.95f, 0.9f, 0.75f );
+                                        const float face = static_cast<float>( units::to_radians( veh.face.dir() ) );
+                                        const float cutoff = vi.has_flag( VPFLAG_CONE_LIGHT ) ? 0.88f :
+                                                             vi.has_flag( VPFLAG_WIDE_CONE_LIGHT ) ? 0.7f : 0.0f;
+                                        add_light( p, 0.7f, 16.0f, 1.0f, 0.95f, 0.8f,
+                                                   normalize( vec3{ std::cos( face ), -0.12f, std::sin( face ) } ), cutoff );
                                     }
                                 }
                                 if( ( vi.has_flag( VPFLAG_DOME_LIGHT ) || vi.has_flag( VPFLAG_AISLE_LIGHT ) ||
@@ -3178,7 +3263,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                                 vk.variant &= static_cast<uint8_t>( ~( vmx_cargo | vmx_tank | vmx_solar ) );
                                 const bool shell = ( vk.param & ( vmv_board | vmv_window ) ) || ( vk.variant & vmx_door );
                                 const float top = ( vk.param & vmv_roof ) ? 1.51f : shell ? 1.385f : 0.51f;
-                                add_sprite( sprite_flat, *veh_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, veh_yaw, top, light,
+                                add_sprite( sprite_flat, *veh_sprite, veh_pos, veh_yaw, top, light,
                                             0.0f );
                             }
                             if( any ) {
@@ -3188,11 +3273,10 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                                 if( vk.variant & vmx_cargo && vk.param & vmv_seat ) {
                                     vk.variant &= ~vmx_cargo;
                                 }
-                                const float yaw = static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f;
                                 const vpart_display vd = veh.get_display_of_tile( ovp->mount_pos() );
                                 const voxelset_entry *ve = vd.id.is_null() ? nullptr : find_chain( vset, "vp_" + vd.id.str(),
                                                            vpart_looks_like );
-                                add_at( main_lists, vk, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f, yaw, light, 0.0f, 1.0f, { 255, 255, 255 }, ve );
+                                add_at( main_lists, vk, veh_pos, 0.0f, veh_yaw, light, 0.0f, 1.0f, { 255, 255, 255 }, ve );
                             }
                         }
                         const sprite_ref *trap_sprite = nullptr;
@@ -3407,6 +3491,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
             cached_sprites = sprite_batches;
             cached_light_pos = light_pos;
             cached_light_col = light_col;
+            cached_light_dir = light_dir;
             cached_ambient = ambient;
             cached_fires = fire_tiles;
         }
@@ -3466,15 +3551,17 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         }
         if( const std::optional<vm_key> hk = held_key( ch ) ) {
             if( last_arm_swing != 0.0f ) {
-                next_anim = { 8.5f * voxel_size, 0.5f, last_arm_swing };
+                next_anim = { 8.5f * voxel_size, 0.5f, last_arm_swing, 0.0f };
             }
             add_at( main_lists, *hk, pos, voxel_size, yaw, light, 0.0f, scale );
         }
     };
     const float own_light = you.active_light();
     if( own_light > 0.0f ) {
-        add_light( you_pos, 1.0f, std::clamp( std::sqrt( own_light ) * 2.0f, 3.0f, 14.0f ), 0.85f, 0.78f,
-                   0.6f );
+        const float reach = std::clamp( std::sqrt( own_light ) * 2.0f, 3.0f, 14.0f );
+        add_light( you_pos, 1.0f, reach * 1.4f, 0.95f, 0.88f, 0.7f,
+                   normalize( vec3{ std::sin( avatar_yaw ), -0.25f, -std::cos( avatar_yaw ) } ), 0.75f );
+        add_light( you_pos, 1.0f, std::min( reach, 4.0f ), 0.4f, 0.37f, 0.3f );
     }
     if( hurt_now( you ) ) {
         for( const monster &mon : g->all_monsters() ) {
@@ -3610,6 +3697,28 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
             }
             const float h = voxel_noise( i, 3, 0, frame_seed ) * level_height * 1.6f;
             add( main_lists, wk, wp, h, 0.0f, 1.0f, 0.0f );
+        }
+        ambient = true;
+        if( !snowy ) {
+            const float time_s = static_cast<float>( now_ms % 1000000 ) / 1000.0f;
+            for( int i = 0; i < 80; ++i ) {
+                float ph = time_s * 1.7f + voxel_noise( i, 7, 0, 3 );
+                const int cycle = static_cast<int>( std::floor( ph ) );
+                ph -= std::floor( ph );
+                if( ph > 0.35f ) {
+                    continue;
+                }
+                const int dx = static_cast<int>( voxel_hash( i, cycle, 1, 5 ) % ( radius * 2 + 1 ) ) - radius;
+                const int dy = static_cast<int>( voxel_hash( i, cycle, 2, 5 ) % ( radius * 2 + 1 ) ) - radius;
+                const tripoint_bub_ms sp( center.x() + dx, center.y() + dy, center.z() );
+                if( !here.inbounds( sp ) || !here.is_outside( sp ) ) {
+                    continue;
+                }
+                vm_key splash;
+                splash.kind = vm_kind::particle;
+                splash.color = rgb( 190, 205, 228 );
+                add( main_lists, splash, sp, voxel_size, 0.0f, 0.9f, 0.0f, 0.3f + ph * 1.6f );
+            }
         }
     }
 
@@ -3813,9 +3922,6 @@ void voxel_renderer::add_distant_terrain( const tripoint_bub_ms &you_pos, float 
             const int bx = corner.x() - origin.x();
             const int by = corner.y() - origin.y();
             const bool inside = bx + omt_size > 0 && by + omt_size > 0 && bx < MAPSIZE_X && by < MAPSIZE_Y;
-            if( inside ) {
-                continue;
-            }
             const std::string id = overmap_buffer.ter( omt ).id().str();
             if( id == "open_air" || id.empty() ) {
                 continue;
@@ -3841,8 +3947,12 @@ void voxel_renderer::add_distant_terrain( const tripoint_bub_ms &you_pos, float 
                 building = true;
             }
             const vec3 center_pos{ bx + omt_size * 0.5f - 0.5f, 0.0f, by + omt_size * 0.5f - 0.5f };
-            add_at( main_lists, ground, center_pos, -static_cast<float>( omt_size ) * voxel_size + 0.1f, 0.0f,
-                    light, 0.0f, static_cast<float>( omt_size ) );
+            next_anim = { 0.0f, 0.0f, 0.0f, 1.0f / omt_size };
+            add_at( main_lists, ground, center_pos, -voxel_size - 0.01f, 0.0f, light, 0.0f,
+                    static_cast<float>( omt_size ) );
+            if( inside ) {
+                continue;
+            }
             if( forest ) {
                 for( int i = 0; i < 9; ++i ) {
                     vm_key tree;
@@ -3875,6 +3985,47 @@ void voxel_renderer::add_distant_terrain( const tripoint_bub_ms &you_pos, float 
             }
         }
     }
+}
+
+std::pair<vec3, float> voxel_renderer::vehicle_motion( const vehicle &veh, float yaw )
+{
+    const auto cached = veh_frame.find( &veh );
+    if( cached != veh_frame.end() ) {
+        return cached->second;
+    }
+    const tripoint_abs_ms pos = veh.pos_abs();
+    vehicle_motion_state &m = veh_motions[&veh];
+    if( !m.init ) {
+        m.init = true;
+        m.from = m.to = pos;
+        m.from_yaw = m.to_yaw = yaw;
+    } else if( pos != m.to || std::fabs( yaw - m.to_yaw ) > 0.001f ) {
+        const tripoint_rel_ms jump = pos - m.to;
+        const bool close_by = std::abs( jump.x() ) <= 40 && std::abs( jump.y() ) <= 40 && jump.z() == 0;
+        m.from = close_by ? m.to : pos;
+        m.from_yaw = close_by ? m.to_yaw : yaw;
+        m.to = pos;
+        m.to_yaw = yaw;
+        m.start = now_ms;
+    }
+    float t = m.start == 0 ? 1.0f : std::clamp( static_cast<float>( now_ms - m.start ) / 220.0f, 0.0f,
+              1.0f );
+    if( t < 1.0f ) {
+        animating = true;
+    }
+    t = t * t * ( 3.0f - 2.0f * t );
+    const tripoint_rel_ms d = m.from - m.to;
+    float dy = m.from_yaw - m.to_yaw;
+    while( dy > pi ) {
+        dy -= 2.0f * pi;
+    }
+    while( dy < -pi ) {
+        dy += 2.0f * pi;
+    }
+    const std::pair<vec3, float> result{ vec3{ d.x() * ( 1.0f - t ), 0.0f, d.y() * ( 1.0f - t ) },
+                                         m.to_yaw + dy * ( 1.0f - t ) };
+    veh_frame.emplace( &veh, result );
+    return result;
 }
 
 bool voxel_renderer::door_animation( const tile_style &st, const tripoint_bub_ms &p, const vm_key &k,
@@ -3947,7 +4098,7 @@ void voxel_renderer::add_creature_parts( const vm_key &key, const vec3 &pos, flo
         part.material = static_cast<vm_material>( parts[i].first );
         if( parts[i].second != 0.0f ) {
             next_anim = { vm_limb_pivot_y( key.kind, key.param, parts[i].first ) * voxel_size, 0.5f,
-                          parts[i].second
+                          parts[i].second, 0.0f
                         };
         }
         add_at( main_lists, part, pos, voxel_size, yaw, light, 0.0f, scale, tint );
@@ -4035,10 +4186,11 @@ voxel_rgb voxel_renderer::flash_tint( const Creature &c, const vec3 &pos )
 }
 
 void voxel_renderer::add_light( const tripoint_bub_ms &p, float lift, float radius, float r, float g,
-                                float b )
+                                float b, const vec3 &dir, float cutoff )
 {
     light_pos.push_back( { p.x() + 0.5f, p.z() * level_height + lift, p.y() + 0.5f, radius } );
     light_col.push_back( { r, g, b } );
+    light_dir.push_back( { dir.x, dir.y, dir.z, cutoff } );
 }
 
 void voxel_renderer::upload_lights( GLuint program )
@@ -4049,7 +4201,9 @@ void voxel_renderer::upload_lights( GLuint program )
     if( count > 0 ) {
         gl.glUniform4fv( gl.glGetUniformLocation( program, "u_lights" ), count, light_pos[0].data() );
         gl.glUniform3fv( gl.glGetUniformLocation( program, "u_light_colors" ), count, light_col[0].data() );
+        gl.glUniform4fv( gl.glGetUniformLocation( program, "u_light_dirs" ), count, light_dir[0].data() );
     }
+    gl.glUniform1f( gl.glGetUniformLocation( program, "u_flash" ), flash );
     gl.glUniform1f( gl.glGetUniformLocation( program, "u_time" ),
                     static_cast<float>( now_ms % 1000000 ) / 1000.0f );
     gl.glUniform1f( gl.glGetUniformLocation( program, "u_shadow_texel" ), 1.0f / shadow_size );
@@ -4168,12 +4322,15 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     } );
     std::vector<std::array<float, 4>> sorted_pos;
     std::vector<std::array<float, 3>> sorted_col;
+    std::vector<std::array<float, 4>> sorted_dir;
     for( size_t i = 0; i < order.size() && i < 24; ++i ) {
         sorted_pos.push_back( light_pos[order[i]] );
         sorted_col.push_back( light_col[order[i]] );
+        sorted_dir.push_back( light_dir[order[i]] );
     }
     light_pos = sorted_pos;
     light_col = sorted_col;
+    light_dir = sorted_dir;
     float view_pitch = cam.pitch;
     float view_distance = distance;
     float fov = 0.7f;
@@ -4245,6 +4402,18 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     gl.glBindFramebuffer( GL_FRAMEBUFFER, msaa_fbo );
     gl.glViewport( 0, 0, width, height );
     const std::string weather_id = get_weather().weather_id.str();
+    flash = 0.0f;
+    if( center.z() >= 0 && has_any( weather_id, "lightning", "thunder", "storm" ) ) {
+        const uint64_t window = now_ms / 6000;
+        const uint64_t local = now_ms % 6000;
+        const uint64_t strike = voxel_hash( static_cast<int>( window ), 0, 0, 71 ) % 4500;
+        if( local >= strike && local < strike + 160 ) {
+            flash = 1.0f - static_cast<float>( local - strike ) / 160.0f;
+        } else if( local >= strike + 220 && local < strike + 300 ) {
+            flash = 0.6f;
+        }
+        ambient = true;
+    }
     vec3 sky = vec3{ 0.02f, 0.025f, 0.045f } * ( 1.0f - daylight ) + vec3{ 0.46f, 0.58f, 0.74f } * daylight;
     const float dusk = std::clamp( 1.0f - std::fabs( daylight - 0.35f ) / 0.35f, 0.0f, 1.0f );
     sky = sky * ( 1.0f - 0.45f * dusk ) + vec3{ 0.8f, 0.45f, 0.32f } * ( 0.45f * dusk );
@@ -4264,7 +4433,7 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     } else if( has( weather_id, "cloud" ) ) {
         sky = sky * 0.8f + vec3{ 0.4f, 0.42f, 0.45f } * ( 0.2f * daylight );
     }
-    const vec3 fog = center.z() < 0 ? vec3{ 0.0f, 0.0f, 0.0f } : sky;
+    const vec3 fog = center.z() < 0 ? vec3{ 0.0f, 0.0f, 0.0f } : sky + vec3{ 0.5f, 0.5f, 0.55f } * flash;
     gl.glClearColor( fog.x, fog.y, fog.z, 1.0f );
     gl.glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
     if( center.z() >= 0 && get_option<bool>( "VOXEL_SKY" ) ) {

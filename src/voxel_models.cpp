@@ -296,6 +296,22 @@ voxel_grid make_door( const vm_key &k, bool open, uint32_t seed )
     return g;
 }
 
+void snow_cap( voxel_grid &g )
+{
+    for( int z = 0; z < g.sz; ++z ) {
+        for( int x = 0; x < g.sx; ++x ) {
+            for( int y = g.sy - 1; y >= 0; --y ) {
+                if( g.solid( x, y, z ) ) {
+                    if( y > 0 ) {
+                        g.set( x, y, z, rgb( 238, 242, 248 ) );
+                    }
+                    break;
+                }
+            }
+        }
+    }
+}
+
 voxel_grid make_tree( const vm_key &k, uint32_t seed )
 {
     voxel_grid g( 24, 40, 24, 8, 8 );
@@ -315,8 +331,8 @@ voxel_grid make_tree( const vm_key &k, uint32_t seed )
               voxel_shade( k.color, 1.12f ), 0.16f, seed + 5, 0.3f );
     if( k.param != 0 ) {
         const voxel_rgb fruit = k.param == 1 ? rgb( 200, 40, 30 ) : k.param == 2 ? rgb( 230, 140, 30 ) :
-                                k.param == 3 ? rgb( 230, 210, 60 ) : rgb( 110, 40, 130 );
-        for( int i = 0; i < 18; ++i ) {
+                                k.param == 3 ? rgb( 230, 210, 60 ) : k.param == 5 ? rgb( 245, 185, 210 ) : rgb( 110, 40, 130 );
+        for( int i = 0; i < ( k.param == 5 ? 70 : 18 ); ++i ) {
             const int x = 6 + static_cast<int>( voxel_hash( i, 0, 0, seed ) % 13 );
             const int y = trunk_h + static_cast<int>( voxel_hash( i, 1, 0, seed ) % 9 );
             const int z = 6 + static_cast<int>( voxel_hash( i, 2, 0, seed ) % 13 );
@@ -1732,15 +1748,18 @@ voxel_grid make_whole_model( const vm_key &raw )
         case vm_kind::door_open:
             return make_door( k, true, seed );
         case vm_kind::tree:
-            return make_tree( k, seed );
         case vm_kind::pine:
-            return make_pine( k, seed );
         case vm_kind::dead_tree:
-            return make_dead_tree( k, seed );
         case vm_kind::young_tree:
-            return make_young_tree( k, seed );
-        case vm_kind::shrub:
-            return make_shrub( k, seed );
+        case vm_kind::shrub: {
+            voxel_grid g = k.kind == vm_kind::tree ? make_tree( k, seed ) : k.kind == vm_kind::pine ?
+                           make_pine( k, seed ) : k.kind == vm_kind::dead_tree ? make_dead_tree( k, seed ) :
+                           k.kind == vm_kind::young_tree ? make_young_tree( k, seed ) : make_shrub( k, seed );
+            if( k.material == vm_material::snow ) {
+                snow_cap( g );
+            }
+            return g;
+        }
         case vm_kind::flower:
             return make_flower( k, seed );
         case vm_kind::tall_grass:
