@@ -195,6 +195,13 @@ voxel_grid make_wall( const vm_key &k, uint32_t seed )
 voxel_grid make_window( const vm_key &k, uint32_t seed )
 {
     voxel_grid g( 8, lh, 8 );
+    if( k.variant == 5 ) {
+        g.box( 1, 6, 4, 7, 13, 5, k.color );
+        if( k.param & 1 ) {
+            swap_xz( g );
+        }
+        return g;
+    }
     for( int y = 0; y < lh; ++y ) {
         const bool solid_row = y < 5 || y >= 13;
         for( int z = 0; z < 8; ++z ) {

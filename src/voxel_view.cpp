@@ -1477,6 +1477,7 @@ class voxel_renderer
         sprite_atlas atlas;
         bool sprite_style = false;
         bool cutaway = false;
+        bool night = false;
         tripoint_bub_ms cut_center;
         GLuint sprite_program = 0;
         GLuint sprite_vbo = 0;
@@ -1850,6 +1851,7 @@ bool voxel_renderer::init()
     SDL_GL_SetAttribute( SDL_GL_CONTEXT_MAJOR_VERSION, 3 );
     SDL_GL_SetAttribute( SDL_GL_CONTEXT_MINOR_VERSION, 3 );
     SDL_GL_SetAttribute( SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE );
+    SDL_GL_SetAttribute( SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG );
     SDL_GL_SetAttribute( SDL_GL_DEPTH_SIZE, 24 );
     window = SDL_CreateWindow( "cataclysm-voxel", 64, 64, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN );
     if( !window ) {
@@ -2289,7 +2291,8 @@ int voxel_renderer::model_for( const vm_key &key )
     if( it != model_lookup.end() ) {
         return it->second;
     }
-    const int idx = upload_model( build_voxel_mesh( make_voxel_model( key ) ), vm_is_emissive( key.kind ) );
+    const bool emissive = vm_is_emissive( key.kind ) || ( key.kind == vm_kind::window && key.variant == 5 );
+    const int idx = upload_model( build_voxel_mesh( make_voxel_model( key ) ), emissive );
     model_lookup.emplace( packed, idx );
     return idx;
 }
@@ -2559,6 +2562,14 @@ void voxel_renderer::add_style( const tile_style &st, const tripoint_bub_ms &p, 
     }
     add_at( lists, k, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) },
             lift, yaw, light, desat, 1.0f, { 255, 255, 255 }, custom, h );
+    if( night && k.kind == vm_kind::window && k.variant != 3 && desat == 0.0f && light > 0.55f ) {
+        vm_key glow = k;
+        glow.variant = 5;
+        glow.color = rgb( 255, 205, 130 );
+        glow.color2 = rgb( 255, 205, 130 );
+        add_at( lists, glow, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) },
+                lift, yaw, light, 0.0f );
+    }
 }
 
 bool voxel_renderer::cut_here( const tripoint_bub_ms &p ) const
@@ -2612,6 +2623,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     const visibility_variables &cache = here.get_visibility_variables_cache();
     sync_voxelset();
     cutaway = get_option<bool>( "VOXEL_CUTAWAY" );
+    night = daylight < 0.25f;
     cut_center = get_avatar().pos_bub( get_map() );
     sprite_style = get_option<std::string>( "VOXEL_STYLE" ) == "sprites";
     if( sprite_style ) {
@@ -2643,6 +2655,8 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     const int min_z = std::max( -OVERMAP_DEPTH, center.z() - 3 );
     const float memory_light = 0.42f;
     const float memory_desat = 0.75f;
+    const int columns_w = x1 - x0 + 1;
+    std::vector<bool> known_column( static_cast<size_t>( columns_w ) * ( y1 - y0 + 1 ), false );
 
     for( int y = y0; y <= y1; ++y ) {
         for( int x = x0; x <= x1; ++x ) {
@@ -2653,6 +2667,9 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                 const bool seen = here.get_visibility( ll, cache ) == visibility_type::CLEAR;
                 const ter_id ter = here.ter( p );
                 const tile_style &ts = terrain_style( ter );
+                if( z == center.z() && ( seen || you.has_memory_at( here.get_abs( p ) ) ) ) {
+                    known_column[static_cast<size_t>( y - y0 ) * columns_w + ( x - x0 )] = true;
+                }
                 if( seen ) {
                     const float light = light_value( here.ambient_light_at( p ), ll );
                     if( !sprite_style || !sprite_terrain( p, ter.id().str(), ts, light, 0.0f ) ) {
@@ -3002,6 +3019,9 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
             }
             for( int y = y0; y <= y1; ++y ) {
                 for( int x = x0; x <= x1; ++x ) {
+                    if( !known_column[static_cast<size_t>( y - y0 ) * columns_w + ( x - x0 )] ) {
+                        continue;
+                    }
                     const float dx = static_cast<float>( x - you_pos.x() );
                     const float dy = static_cast<float>( y - you_pos.y() );
                     if( dx * dx + dy * dy < 20.0f ) {

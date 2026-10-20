@@ -1,0 +1,34 @@
+name: Voxel models
+description: Share voxel models or a voxel tileset, or ask for a model to be made
+labels: ["voxel models"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        See [doc/VOXEL_TILESETS.md](../blob/voxel-3d/doc/VOXEL_TILESETS.md) for the format and
+        [doc/VOXEL_MODELING_GUIDE.md](../blob/voxel-3d/doc/VOXEL_MODELING_GUIDE.md) for a step by step guide.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - I made models and want them included
+        - I would like a model for something
+    validations:
+      required: true
+
+  - type: textarea
+    id: ids
+    attributes:
+      label: Game ids or built-in types
+      description: Which objects the models are for, for example mon_zombie_hulk, f_sofa or builtin tree.
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files and screenshots
+      description: Attach the .vox files as a zip and a screenshot of them in game.
