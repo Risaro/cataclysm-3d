@@ -3958,6 +3958,14 @@ void voxel_renderer::add_distant_terrain( const tripoint_bub_ms &you_pos, float 
                     tree.color = tree.kind == vm_kind::pine ? rgb( 38, 88, 50 ) : rgb( 70, 122, 46 );
                     tree.color2 = rgb( 92, 68, 48 );
                     tree.variant = static_cast<uint8_t>( voxel_hash( i, 4, 0, h ) % 6 );
+                    if( g_season == WINTER ) {
+                        tree.material = vm_material::snow;
+                        if( tree.kind == vm_kind::tree ) {
+                            tree.kind = vm_kind::dead_tree;
+                        }
+                    } else if( g_season == AUTUMN && tree.kind == vm_kind::tree ) {
+                        tree.color = voxel_hash( i, 5, 0, h ) % 2 ? rgb( 200, 120, 40 ) : rgb( 180, 60, 35 );
+                    }
                     const vec3 tp{ bx + 2.0f + static_cast<float>( voxel_hash( i, 1, 0, h ) % 20 ), 0.0f,
                                    by + 2.0f + static_cast<float>( voxel_hash( i, 2, 0, h ) % 20 ) };
                     add_at( main_lists, tree, tp, 0.0f, static_cast<float>( i ), light, 0.0f, 1.6f );
