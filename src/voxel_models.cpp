@@ -1,6 +1,7 @@
 #include "voxel_models.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace
@@ -61,12 +62,15 @@ voxel_rgb floor_voxel( vm_material m, const voxel_rgb &base, int x, int z, uint3
             if( stripe_z || stripe_x ) {
                 return rgb( 200, 170, 50 );
             }
+            if( ( param & 4 ) != 0 && x % 4 < 2 ) {
+                return rgb( 225, 225, 220 );
+            }
             return voxel_shade( base, nz( x, 0, z, seed, 0.07f ) );
         }
         case vm_material::sidewalk:
             return voxel_shade( base, ( x == 0 || z == 0 ? 0.82f : 1.0f ) * nz( x, 0, z, seed, 0.04f ) );
         case vm_material::concrete:
-            return voxel_shade( base, nz( x, 0, z, seed, 0.06f ) );
+            return voxel_shade( base, ( x == 0 || z == 0 ? 0.92f : 1.0f ) * nz( x, 0, z, seed, 0.03f ) );
         case vm_material::wood: {
             const int plank = z / 2;
             float s = 0.85f + 0.3f * voxel_noise( plank, 0, 0, seed );
@@ -80,8 +84,8 @@ voxel_rgb floor_voxel( vm_material m, const voxel_rgb &base, int x, int z, uint3
         }
         case vm_material::tile: {
             const bool checker = ( ( x / 4 ) + ( z / 4 ) ) % 2 == 0;
-            const float s = checker ? 1.0f : 0.82f;
-            return voxel_shade( base, s * nz( x, 0, z, seed, 0.02f ) );
+            const float s = checker ? 1.0f : 0.93f;
+            return voxel_shade( base, s * nz( x, 0, z, seed, 0.015f ) );
         }
         case vm_material::carpet:
             return voxel_shade( base, nz( x, 0, z, seed, 0.05f ) );
@@ -98,7 +102,7 @@ voxel_rgb floor_voxel( vm_material m, const voxel_rgb &base, int x, int z, uint3
         case vm_material::generic:
             break;
     }
-    return voxel_shade( base, nz( x, 0, z, seed, 0.08f ) );
+    return voxel_shade( base, nz( x, 0, z, seed, 0.04f ) );
 }
 
 voxel_rgb wall_voxel( vm_material m, const voxel_rgb &base, int x, int y, int z, uint32_t seed )
@@ -160,13 +164,14 @@ voxel_grid make_floor( const vm_key &k, uint32_t seed )
 
 voxel_grid make_wall( const vm_key &k, uint32_t seed )
 {
-    voxel_grid g( 8, lh, 8 );
+    const int h = k.param == 1 ? lh / 2 : lh;
+    voxel_grid g( 8, h, 8 );
     if( k.material == vm_material::glass ) {
-        for( int y = 0; y < lh; ++y ) {
+        for( int y = 0; y < h; ++y ) {
             for( int z = 0; z < 8; ++z ) {
                 for( int x = 0; x < 8; ++x ) {
                     const bool edge = ( x == 0 || x == 7 ) && ( z == 0 || z == 7 );
-                    if( edge || y == 0 || y == lh - 1 ) {
+                    if( edge || y == 0 || y == h - 1 ) {
                         g.set( x, y, z, rgb( 90, 95, 100 ) );
                     } else if( x == 0 || x == 7 || z == 0 || z == 7 ) {
                         g.set( x, y, z, voxel_mix( k.color, rgb( 170, 210, 235 ), 0.6f ), true );
@@ -176,7 +181,7 @@ voxel_grid make_wall( const vm_key &k, uint32_t seed )
         }
         return g;
     }
-    for( int y = 0; y < lh; ++y ) {
+    for( int y = 0; y < h; ++y ) {
         for( int z = 0; z < 8; ++z ) {
             for( int x = 0; x < 8; ++x ) {
                 g.set( x, y, z, wall_voxel( k.material, k.color, x, y, z, seed ) );
@@ -243,15 +248,21 @@ voxel_grid make_door( const vm_key &k, bool open, uint32_t seed )
 {
     voxel_grid g( 8, lh, 8 );
     for( int y = 13; y < lh; ++y ) {
-        for( int z = 0; z < 8; ++z ) {
+        for( int z = 2; z < 6; ++z ) {
             for( int x = 0; x < 8; ++x ) {
                 g.set( x, y, z, wall_voxel( vm_material::generic, k.color2, x, y, z, seed ) );
             }
         }
     }
+    for( int y = 0; y < 13; ++y ) {
+        for( int z = 2; z < 6; ++z ) {
+            g.set( 0, y, z, voxel_shade( k.color2, 0.9f ) );
+            g.set( 7, y, z, voxel_shade( k.color2, 0.9f ) );
+        }
+    }
     const bool glass = k.material == vm_material::glass;
     for( int y = 0; y < 13; ++y ) {
-        for( int a = 0; a < 8; ++a ) {
+        for( int a = 1; a < 7; ++a ) {
             for( int t = 3; t < 5; ++t ) {
                 const bool panel = ( a >= 2 && a < 6 ) && ( ( y >= 2 && y < 6 ) || ( y >= 7 && y < 11 ) );
                 voxel_rgb c = voxel_shade( k.color, ( panel ? 0.86f : 1.0f ) * nz( a, y, t, seed, 0.04f ) );
@@ -728,7 +739,13 @@ voxel_grid make_humanoid( const vm_key &k, uint32_t seed, bool zombie )
     voxel_grid g( 8, 13, 8 );
     const voxel_rgb skin = k.color;
     const voxel_rgb shirt = k.color2;
-    const voxel_rgb pants = zombie ? voxel_shade( rgb( 70, 70, 85 ), 0.8f ) : rgb( 55, 60, 85 );
+    static const std::array<voxel_rgb, 8> pants_palette = { {
+            rgb( 55, 60, 85 ), rgb( 40, 40, 44 ), rgb( 110, 90, 60 ), rgb( 70, 85, 55 ),
+            rgb( 130, 125, 115 ), rgb( 90, 40, 40 ), rgb( 180, 175, 165 ), rgb( 60, 75, 110 )
+        }
+    };
+    const voxel_rgb pants = zombie ? voxel_shade( rgb( 70, 70, 85 ), 0.8f ) :
+                            pants_palette[( k.variant / 3 ) % 8];
     const voxel_rgb hair = zombie ? rgb( 50, 45, 40 ) : ( k.variant % 3 == 0 ? rgb( 60, 40, 25 ) :
                            k.variant % 3 == 1 ? rgb( 25, 20, 18 ) : rgb( 170, 130, 60 ) );
     g.box( 2, 0, 3, 4, 5, 5, pants, 0.05f, seed );
@@ -986,6 +1003,406 @@ voxel_grid make_cursor( const vm_key &k )
     return g;
 }
 
+voxel_grid make_machine( const vm_key &k, uint32_t seed )
+{
+    const bool tall = k.param == 1;
+    voxel_grid g( 8, 16, 8 );
+    const int top = tall ? 14 : 10;
+    const int x0 = tall ? 2 : 1;
+    const int x1 = tall ? 6 : 7;
+    g.box( x0, 1, 1, x1, top, 7, k.color, 0.04f, seed );
+    g.box( x0, 0, 1, x1, 1, 7, voxel_shade( k.color, 0.6f ) );
+    for( int z = 2; z < 6; z += 2 ) {
+        for( int y = 6; y < 9; ++y ) {
+            g.set( x0 - 1 < 0 ? 0 : x0, y, z, voxel_shade( k.color, 0.55f ) );
+            g.set( x1 - 1, y, z, voxel_shade( k.color, 0.55f ) );
+        }
+    }
+    g.box( x0 + 1, top - 4, 0, x1 - 1, top - 2, 1, k.color2 );
+    for( int x = x0; x < x1; ++x ) {
+        g.set( x, top / 2, 0, voxel_shade( k.color, 0.75f ) );
+    }
+    if( tall ) {
+        g.box( 6, 4, 3, 7, 10, 4, rgb( 30, 30, 30 ) );
+        g.box( 2, top, 2, 6, top + 1, 6, voxel_shade( k.color2, 0.8f ) );
+    }
+    return g;
+}
+
+voxel_grid make_pole( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 26, 8 );
+    g.box( 3, 0, 3, 5, 24, 5, k.color, 0.06f, seed );
+    if( k.param == 1 ) {
+        g.box( 0, 22, 3, 8, 23, 5, voxel_shade( k.color, 0.85f ) );
+        g.set( 0, 23, 4, rgb( 200, 200, 190 ) );
+        g.set( 7, 23, 4, rgb( 200, 200, 190 ) );
+    } else if( k.param == 2 ) {
+        for( int y = 17; y < 23; ++y ) {
+            for( int x = 5; x < 8; ++x ) {
+                g.set( x, y, 4, voxel_shade( k.color2, ( y % 2 ) ? 0.85f : 1.0f ) );
+            }
+        }
+    } else if( k.param == 3 ) {
+        g.sphere( 4.0f, 22.0f, 4.0f, 3.0f, 1.5f, 3.0f, voxel_shade( k.color, 0.9f ) );
+    }
+    return g;
+}
+
+voxel_grid make_stack( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 12, 8 );
+    const int layers = 1 + k.param;
+    for( int l = 0; l < layers * 2; ++l ) {
+        for( int b = 0; b < 4; ++b ) {
+            const voxel_rgb c = voxel_shade( k.color, 0.8f + 0.35f * voxel_noise( l, b, 0, seed ) );
+            if( l % 2 == 0 ) {
+                g.box( 0, l, b * 2, 8, l + 1, b * 2 + 2, c, 0.04f, seed + l );
+            } else {
+                g.box( b * 2, l, 0, b * 2 + 2, l + 1, 8, c, 0.04f, seed + l );
+            }
+        }
+    }
+    return g;
+}
+
+voxel_grid make_mound( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 8, 8 );
+    const float h = 1.5f + 1.5f * k.param;
+    g.sphere( 4.0f, 0.0f, 4.0f, 4.2f, h, 4.2f, k.color, 0.14f, seed );
+    return g;
+}
+
+voxel_grid make_mat( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 1, 8 );
+    for( int z = 0; z < 8; ++z ) {
+        for( int x = 0; x < 8; ++x ) {
+            const bool border = x == 0 || z == 0 || x == 7 || z == 7;
+            g.set( x, 0, z, voxel_shade( k.color, ( border ? 0.82f : 1.0f ) * nz( x, 0, z, seed, 0.05f ) ) );
+        }
+    }
+    return g;
+}
+
+voxel_grid make_panel( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 14, 8 );
+    const int x1 = k.variant == 1 ? 2 : 8;
+    for( int y = 0; y < 14; ++y ) {
+        for( int x = 0; x < x1; ++x ) {
+            const int t = 3 + ( ( x + y / 5 ) % 3 == 0 ? 1 : 0 );
+            g.set( x, y, t, voxel_shade( k.color, ( x % 3 == 0 ? 0.88f : 1.0f ) * nz( x, y, 0, seed, 0.04f ) ) );
+        }
+    }
+    if( k.param & 1 ) {
+        swap_xz( g );
+    }
+    return g;
+}
+
+voxel_grid make_pillar( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, lh, 8 );
+    g.box( 2, 0, 2, 6, lh, 6, k.color, 0.05f, seed );
+    g.box( 1, 0, 1, 7, 2, 7, voxel_shade( k.color, 0.9f ), 0.04f, seed + 1 );
+    g.box( 1, lh - 2, 1, 7, lh, 7, voxel_shade( k.color, 0.9f ), 0.04f, seed + 2 );
+    return g;
+}
+
+voxel_grid make_stump( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 4, 8 );
+    for( int y = 0; y < 3; ++y ) {
+        for( int z = 0; z < 8; ++z ) {
+            for( int x = 0; x < 8; ++x ) {
+                const float dx = x + 0.5f - 4.0f;
+                const float dz = z + 0.5f - 4.0f;
+                const float d = dx * dx + dz * dz;
+                if( d <= 8.5f ) {
+                    const bool top = y == 2;
+                    g.set( x, y, z, top ? voxel_shade( rgb( 190, 150, 100 ), d < 3.0f ? 0.85f : 1.0f ) :
+                           voxel_shade( k.color, nz( x, y, z, seed, 0.1f ) ) );
+                }
+            }
+        }
+    }
+    return g;
+}
+
+voxel_grid make_ramp( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, lh, 8 );
+    for( int z = 0; z < 8; ++z ) {
+        const int h = std::max( 1, ( 8 - z ) * ( k.param == 1 ? 2 : 1 ) );
+        g.box( 0, 0, z, 8, h, z + 1, k.color, 0.06f, seed + z );
+    }
+    return g;
+}
+
+voxel_grid make_grave( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 9, 8 );
+    g.sphere( 4.0f, 0.0f, 3.5f, 3.0f, 1.5f, 3.5f, rgb( 110, 82, 56 ), 0.15f, seed );
+    g.box( 2, 0, 6, 6, 7, 7, k.color, 0.06f, seed + 1 );
+    g.box( 3, 7, 6, 5, 8, 7, k.color, 0.06f, seed + 2 );
+    return g;
+}
+
+voxel_grid make_anvil( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 6, 8 );
+    g.box( 2, 0, 2, 6, 1, 6, voxel_shade( k.color, 0.8f ) );
+    g.box( 3, 1, 3, 5, 3, 5, k.color, 0.04f, seed );
+    g.box( 1, 3, 2, 7, 5, 6, k.color, 0.04f, seed + 1 );
+    g.box( 0, 4, 3, 1, 5, 5, k.color );
+    return g;
+}
+
+voxel_grid make_hedge( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 12, 8 );
+    const int h = k.param == 1 ? 12 : 6;
+    for( int y = 0; y < h; ++y ) {
+        for( int z = 0; z < 8; ++z ) {
+            for( int x = 0; x < 8; ++x ) {
+                const bool edge = x == 0 || z == 0 || x == 7 || z == 7 || y == h - 1;
+                if( !edge || voxel_noise( x, y, z, seed ) > 0.25f ) {
+                    g.set( x, y, z, voxel_shade( k.color, nz( x, y, z, seed + 3, 0.15f ) ) );
+                }
+            }
+        }
+    }
+    return g;
+}
+
+voxel_grid make_trap( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 3, 8 );
+    for( int z = 1; z < 7; ++z ) {
+        for( int x = 1; x < 7; ++x ) {
+            const float dx = x + 0.5f - 4.0f;
+            const float dz = z + 0.5f - 4.0f;
+            const float d = dx * dx + dz * dz;
+            if( d < 9.0f && d > 4.0f ) {
+                g.set( x, 0, z, voxel_shade( k.color, nz( x, 0, z, seed, 0.08f ) ) );
+                if( ( x + z ) % 2 == 0 ) {
+                    g.set( x, 1, z, voxel_shade( k.color, 1.15f ) );
+                }
+            } else if( d <= 1.5f ) {
+                g.set( x, 0, z, voxel_shade( k.color, 0.7f ) );
+            }
+        }
+    }
+    return g;
+}
+
+voxel_grid make_vehicle_composite( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 14, 8 );
+    const uint8_t f = k.param;
+    const uint8_t x = k.variant;
+    const voxel_rgb body = k.color;
+    const voxel_rgb dark = voxel_shade( body, 0.65f );
+    const voxel_rgb glass = rgb( 140, 180, 210 );
+    const bool broken = ( x & vmx_broken ) != 0;
+    g.box( 0, 2, 0, 8, 4, 8, dark, 0.05f, seed );
+    if( f & vmv_wheel ) {
+        g.box( 2, 0, 1, 6, 5, 7, rgb( 28, 28, 30 ), 0.05f, seed + 1 );
+        g.box( 1, 1, 3, 7, 3, 5, rgb( 160, 160, 165 ) );
+    }
+    if( f & vmv_engine ) {
+        g.box( 1, 4, 1, 7, 8, 7, rgb( 70, 72, 76 ), 0.08f, seed + 2 );
+        g.box( 2, 8, 2, 6, 9, 6, rgb( 110, 60, 40 ) );
+    }
+    if( x & vmx_cargo ) {
+        g.box( 1, 4, 1, 7, 7, 7, voxel_shade( body, 0.85f ), 0.05f, seed + 3 );
+    }
+    if( x & vmx_tank ) {
+        g.sphere( 4.0f, 6.0f, 4.0f, 3.0f, 2.0f, 3.5f, rgb( 120, 120, 90 ), 0.05f, seed + 4 );
+    }
+    if( f & vmv_seat ) {
+        g.box( 1, 4, 1, 7, 6, 7, k.color2, 0.06f, seed + 5 );
+        g.box( 1, 6, 6, 7, 10, 8, k.color2, 0.06f, seed + 6 );
+    }
+    const bool door_closed = ( x & vmx_door ) != 0;
+    if( ( f & vmv_board ) || door_closed ) {
+        g.box( 0, 4, 0, 8, 11, 8, body, 0.04f, seed + 7 );
+        g.box( 0, 7, 0, 8, 8, 8, voxel_shade( body, 0.88f ) );
+        if( door_closed ) {
+            for( int y = 4; y < 11; ++y ) {
+                g.set( 0, y, 1, dark );
+                g.set( 7, y, 1, dark );
+            }
+            g.set( 0, 7, 5, rgb( 200, 200, 200 ) );
+            g.set( 7, 7, 5, rgb( 200, 200, 200 ) );
+        }
+    } else if( f & vmv_window ) {
+        g.box( 0, 4, 0, 8, 7, 8, body, 0.04f, seed + 8 );
+        g.box( 0, 7, 0, 8, 11, 8, glass, 0.0f, 0, true );
+        if( broken ) {
+            for( int y = 7; y < 11; ++y ) {
+                for( int z = 0; z < 8; ++z ) {
+                    for( int xx = 0; xx < 8; ++xx ) {
+                        if( voxel_noise( xx, y, z, seed ) < 0.6f ) {
+                            g.clear( xx, y, z );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if( ( f & vmv_roof ) || ( f & ( vmv_board | vmv_window ) ) ) {
+        if( f & vmv_roof ) {
+            g.box( 0, 11, 0, 8, 12, 8, body, 0.04f, seed + 9 );
+        }
+    }
+    if( f & vmv_light ) {
+        g.box( 1, 5, 0, 3, 7, 1, rgb( 255, 245, 200 ) );
+        g.box( 5, 5, 0, 7, 7, 1, rgb( 255, 245, 200 ) );
+    }
+    if( x & vmx_solar ) {
+        g.box( 0, 12, 0, 8, 13, 8, rgb( 30, 40, 90 ) );
+        for( int i = 0; i < 8; i += 3 ) {
+            g.box( i, 12, 0, i + 1, 13, 8, rgb( 150, 150, 160 ) );
+        }
+    }
+    if( f & vmv_turret ) {
+        const int base = ( f & vmv_roof ) ? 12 : 4;
+        g.box( 2, base, 2, 6, base + 2, 6, rgb( 70, 75, 70 ) );
+        g.box( 3, base + 2, 0, 5, base + 3, 4, rgb( 40, 40, 40 ) );
+    }
+    if( broken ) {
+        for( int i = 0; i < 20; ++i ) {
+            const int bx = static_cast<int>( voxel_hash( i, 0, 0, seed ) % 8 );
+            const int by = 2 + static_cast<int>( voxel_hash( i, 1, 0, seed ) % 10 );
+            const int bz = static_cast<int>( voxel_hash( i, 2, 0, seed ) % 8 );
+            if( g.solid( bx, by, bz ) ) {
+                g.set( bx, by, bz, rgb( 60, 45, 35 ) );
+            }
+        }
+    }
+    return g;
+}
+
+voxel_grid make_item( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 4, 8 );
+    const voxel_rgb c = k.color;
+    const voxel_rgb metal = rgb( 90, 92, 98 );
+    const voxel_rgb wood = rgb( 120, 85, 55 );
+    switch( k.kind ) {
+        case vm_kind::item_gun:
+            g.box( 6, 0, 3, 8, 2, 5, wood, 0.05f, seed );
+            g.box( 3, 0, 3, 6, 2, 5, voxel_mix( c, metal, 0.6f ), 0.04f, seed + 1 );
+            g.box( 0, 1, 4, 3, 2, 5, metal );
+            g.box( 4, 0, 5, 5, 1, 6, wood );
+            break;
+        case vm_kind::item_blade:
+            g.box( 5, 0, 4, 8, 1, 5, wood );
+            g.box( 5, 0, 3, 6, 1, 6, metal );
+            g.box( 0, 0, 4, 5, 1, 5, voxel_mix( c, rgb( 210, 215, 220 ), 0.6f ) );
+            break;
+        case vm_kind::item_tool:
+            g.box( 2, 0, 4, 8, 1, 5, voxel_mix( c, wood, 0.5f ) );
+            g.box( 0, 0, 2, 2, 2, 7, metal, 0.04f, seed );
+            break;
+        case vm_kind::item_clothing:
+            g.box( 1, 0, 2, 7, 1, 6, c, 0.06f, seed );
+            g.box( 2, 1, 2, 6, 2, 5, voxel_shade( c, 0.92f ), 0.06f, seed + 1 );
+            break;
+        case vm_kind::item_food:
+            g.box( 2, 0, 3, 5, 3, 6, c, 0.05f, seed );
+            g.box( 2, 1, 3, 5, 2, 6, voxel_shade( c, 1.2f ) );
+            g.box( 5, 0, 2, 7, 2, 4, voxel_shade( c, 0.85f ) );
+            break;
+        case vm_kind::item_bottle:
+            g.box( 3, 0, 3, 5, 3, 5, c, 0.04f, seed );
+            g.box( 3, 3, 3, 4, 4, 4, voxel_shade( c, 0.8f ) );
+            break;
+        case vm_kind::item_book:
+            g.box( 2, 0, 2, 6, 1, 7, c, 0.04f, seed );
+            g.box( 2, 0, 2, 3, 1, 7, rgb( 235, 230, 215 ) );
+            break;
+        case vm_kind::item_ammo:
+            g.box( 2, 0, 3, 6, 2, 6, c, 0.04f, seed );
+            g.set( 3, 2, 4, rgb( 200, 160, 70 ) );
+            g.set( 4, 2, 4, rgb( 200, 160, 70 ) );
+            break;
+        case vm_kind::item_corpse:
+            g = voxel_grid( 8, 3, 8 );
+            g.box( 2, 0, 0, 6, 2, 2, voxel_shade( c, 0.95f ), 0.08f, seed );
+            g.box( 2, 0, 2, 6, 2, 5, c, 0.1f, seed + 1 );
+            g.box( 2, 0, 5, 4, 1, 8, voxel_shade( c, 0.85f ), 0.08f, seed + 2 );
+            g.box( 4, 0, 5, 6, 1, 8, voxel_shade( c, 0.8f ), 0.08f, seed + 3 );
+            g.box( 0, 0, 2, 2, 1, 4, voxel_shade( c, 0.9f ) );
+            g.box( 6, 0, 2, 8, 1, 4, voxel_shade( c, 0.9f ) );
+            for( int i = 0; i < 6; ++i ) {
+                g.set( static_cast<int>( voxel_hash( i, 0, 0, seed ) % 8 ), 0,
+                       static_cast<int>( voxel_hash( i, 1, 0, seed ) % 8 ), rgb( 110, 15, 15 ) );
+            }
+            break;
+        default:
+            break;
+    }
+    return g;
+}
+
+voxel_grid make_held( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 10, 8 );
+    const voxel_rgb metal = rgb( 80, 82, 88 );
+    const voxel_rgb wood = rgb( 120, 85, 55 );
+    switch( k.param ) {
+        case 0:
+            g.box( 6, 6, 3, 7, 8, 6, wood );
+            g.box( 6, 7, 0, 7, 8, 3, voxel_mix( k.color, metal, 0.6f ), 0.04f, seed );
+            break;
+        case 1:
+            g.box( 6, 5, 3, 7, 6, 5, wood );
+            g.box( 6, 5, 0, 7, 6, 3, voxel_mix( k.color, rgb( 210, 215, 220 ), 0.6f ) );
+            break;
+        default:
+            g.box( 6, 5, 2, 7, 6, 5, voxel_mix( k.color, wood, 0.5f ) );
+            g.box( 6, 5, 0, 7, 7, 2, metal );
+            break;
+    }
+    return g;
+}
+
+voxel_grid make_marker( const vm_key &k )
+{
+    voxel_grid g( 8, 6, 8 );
+    if( k.kind == vm_kind::bolt ) {
+        g.box( 3, 3, 3, 5, 5, 5, k.color );
+    } else {
+        for( int z = 1; z < 7; ++z ) {
+            for( int x = 1; x < 7; ++x ) {
+                if( x == 1 || x == 6 || z == 1 || z == 6 ) {
+                    g.set( x, 0, z, k.color );
+                }
+            }
+        }
+        g.box( 3, 0, 3, 5, 1, 5, k.color );
+    }
+    return g;
+}
+
+voxel_grid make_particle( const vm_key &k )
+{
+    voxel_grid g( 8, 6, 8 );
+    if( k.kind == vm_kind::rain ) {
+        g.box( 2, 0, 3, 3, 5, 4, k.color );
+        g.box( 6, 2, 6, 7, 6, 7, k.color );
+    } else {
+        g.set( 2, 0, 3, k.color );
+        g.set( 6, 3, 6, k.color );
+        g.set( 4, 5, 1, k.color );
+    }
+    return g;
+}
+
 } // namespace
 
 uint64_t vm_key::pack() const
@@ -997,7 +1414,8 @@ uint64_t vm_key::pack() const
 
 bool vm_is_emissive( vm_kind kind )
 {
-    return kind == vm_kind::fire || kind == vm_kind::cursor;
+    return kind == vm_kind::fire || kind == vm_kind::cursor || kind == vm_kind::rain ||
+           kind == vm_kind::snow || kind == vm_kind::bolt || kind == vm_kind::marker;
 }
 
 voxel_grid make_voxel_model( const vm_key &raw )
@@ -1115,6 +1533,52 @@ voxel_grid make_voxel_model( const vm_key &raw )
             return make_cloud( k, seed );
         case vm_kind::cursor:
             return make_cursor( k );
+        case vm_kind::machine:
+            return make_machine( k, seed );
+        case vm_kind::pole:
+            return make_pole( k, seed );
+        case vm_kind::stack:
+            return make_stack( k, seed );
+        case vm_kind::mound:
+            return make_mound( k, seed );
+        case vm_kind::mat:
+            return make_mat( k, seed );
+        case vm_kind::panel:
+            return make_panel( k, seed );
+        case vm_kind::pillar:
+            return make_pillar( k, seed );
+        case vm_kind::stump:
+            return make_stump( k, seed );
+        case vm_kind::ramp:
+            return make_ramp( k, seed );
+        case vm_kind::grave:
+            return make_grave( k, seed );
+        case vm_kind::anvil:
+            return make_anvil( k, seed );
+        case vm_kind::hedge:
+            return make_hedge( k, seed );
+        case vm_kind::trap:
+            return make_trap( k, seed );
+        case vm_kind::vehicle:
+            return make_vehicle_composite( k, seed );
+        case vm_kind::item_gun:
+        case vm_kind::item_blade:
+        case vm_kind::item_tool:
+        case vm_kind::item_clothing:
+        case vm_kind::item_food:
+        case vm_kind::item_bottle:
+        case vm_kind::item_book:
+        case vm_kind::item_ammo:
+        case vm_kind::item_corpse:
+            return make_item( k, seed );
+        case vm_kind::held:
+            return make_held( k, seed );
+        case vm_kind::rain:
+        case vm_kind::snow:
+            return make_particle( k );
+        case vm_kind::bolt:
+        case vm_kind::marker:
+            return make_marker( k );
     }
     return make_furniture( k, seed );
 }

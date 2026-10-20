@@ -6076,3 +6076,27 @@ std::vector<options_manager::id_and_option> cata_tiles::build_display_list()
 }
 
 #endif // SDL_TILES
+
+void cata_tiles::export_voxel_overlays( voxel_view::overlays &out ) const
+{
+    out = voxel_view::overlays();
+    out.explosion = do_draw_explosion;
+    out.explosion_center = exp_pos;
+    out.explosion_radius = exp_rad;
+    if( do_draw_custom_explosion ) {
+        for( const std::pair<const tripoint_bub_ms, explosion_tile> &e : custom_explosion_layer ) {
+            out.custom_explosion.push_back( e.first );
+        }
+    }
+    out.bullet = do_draw_bullet;
+    out.bullet_pos = bul_pos;
+    if( do_draw_line ) {
+        out.line = line_trajectory;
+    }
+    if( do_draw_cursor ) {
+        out.cursors = cursors;
+    }
+    if( do_draw_highlight ) {
+        out.highlights = highlights;
+    }
+}

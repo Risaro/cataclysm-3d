@@ -12,6 +12,7 @@
 #include <SDL3/SDL_video.h>
 
 #include "avatar.h"
+#include "bodypart.h"
 #include "cached_options.h"
 #include "calendar.h"
 #include "coordinates.h"
@@ -21,6 +22,7 @@
 #include "field_type.h"
 #include "game.h"
 #include "item.h"
+#include "item_location.h"
 #include "map.h"
 #include "map_memory.h"
 #include "mapdata.h"
@@ -29,6 +31,7 @@
 #include "npc.h"
 #include "options.h"
 #include "sdl_utils.h"
+#include "trap.h"
 #include "type_id.h"
 #include "uistate.h"
 #include "units.h"
@@ -38,6 +41,8 @@
 #include "voxel_model.h"
 #include "voxel_models.h"
 #include "vpart_position.h"
+#include "weather.h"
+#include "weather_type.h"
 
 namespace
 {
@@ -280,6 +285,7 @@ struct camera_state {
 };
 
 camera_state cam;
+voxel_view::overlays overlay_state;
 
 constexpr voxel_rgb rgb( uint8_t r, uint8_t g, uint8_t b )
 {
@@ -500,7 +506,7 @@ tile_style classify_terrain( const ter_t &t )
         st.material = has( id, "glass" ) ? vm_material::glass : vm_material::generic;
         st.color = has_any( id, "metal", "steel", "bar", "vault" ) ? rgb( 120, 126, 132 ) : rgb( 128, 88,
                    54 );
-        st.color2 = rgb( 110, 100, 90 );
+        st.color2 = rgb( 176, 166, 150 );
         st.oriented = true;
         st.wall_like = true;
         return st;
@@ -529,15 +535,53 @@ tile_style classify_terrain( const ter_t &t )
         st.wall_like = true;
         return st;
     }
-    if( t.has_flag( ter_furn_flag::TFLAG_WALL ) || ( !t.has_flag( ter_furn_flag::TFLAG_TRANSPARENT ) &&
+    if( has_any( id, "column", "pillar", "missile" ) && !has( id, "exploded" ) ) {
+        st.kind = vm_kind::pillar;
+        st.color = has( id, "missile" ) ? rgb( 200, 200, 195 ) : rgb( 190, 185, 175 );
+        st.overlay = true;
+        st.floor_material = vm_material::concrete;
+        st.floor_color = material_color( vm_material::concrete, base );
+        return st;
+    }
+    const bool glass_wall = has( id, "glass" ) && t.movecost == 0 && !has( id, "roof" );
+    if( t.has_flag( ter_furn_flag::TFLAG_WALL ) || glass_wall || ( !t.has_flag(
+                ter_furn_flag::TFLAG_TRANSPARENT ) &&
             t.movecost == 0 && !t.has_flag( ter_furn_flag::TFLAG_THIN_OBSTACLE ) ) ) {
         st.kind = vm_kind::wall;
-        st.material = material_from_id( id, vm_material::generic );
-        if( id == "t_rock" || has_any( id, "t_rock_", "t_soil", "_cave", "natural" ) ) {
+        st.material = glass_wall ? vm_material::glass : material_from_id( id, vm_material::generic );
+        if( id == "t_rock" || has_any( id, "t_rock_", "t_soil", "_cave", "natural", "root_wall",
+                                       "rammed_earth" ) ) {
             st.material = vm_material::rock;
         }
-        st.color = st.material == vm_material::generic ? voxel_mix( base, rgb( 200, 190, 172 ),
-                   0.55f ) : material_color( st.material, base );
+        if( has_any( id, "sconc", "strconc", "bulkhead" ) ) {
+            st.material = vm_material::concrete;
+        }
+        if( has_any( id, "wattle", "bark", "palisade" ) ) {
+            st.material = vm_material::wood;
+        }
+        static const std::array<const char *, 12> paints = { {
+                "_w", "_r", "_b", "_g", "_y", "_p", "_P", "_cyan", "_black", "_brown", "_gray", "_orange"
+            }
+        };
+        bool painted = false;
+        for( const char *suffix : paints ) {
+            const std::string sfx( suffix );
+            if( id.size() > sfx.size() && id.compare( id.size() - sfx.size(), sfx.size(), sfx ) == 0 ) {
+                painted = true;
+            }
+        }
+        if( painted && st.material != vm_material::brick ) {
+            st.color = voxel_mix( base, rgb( 210, 205, 195 ), 0.2f );
+        } else {
+            st.color = st.material == vm_material::generic ? voxel_mix( base, rgb( 200, 190, 172 ),
+                       0.55f ) : material_color( st.material, base );
+        }
+        if( has_any( id, "burnt", "charred" ) ) {
+            st.color = voxel_shade( st.color, 0.4f );
+        }
+        if( has_any( id, "halfway", "_half" ) ) {
+            st.param = 1;
+        }
         st.wall_like = true;
         st.variants = 3;
         return st;
@@ -596,9 +640,127 @@ tile_style classify_terrain( const ter_t &t )
         st.color = rgb( 130, 124, 116 );
         return st;
     }
+    if( has_any( id, "gas_pump", "diesel_pump", "avgas_pump", "jp8_pump", "sewage_pump", "atm",
+                 "ticket", "slot_machine", "vending", "radio_controls", "t_card", "card_reader", "intercom",
+                 "t_switch", "elevator_control", "nanofab", "car_charger", "recycler", "milking", "nuclear_reactor",
+                 "apiary", "beehive", "brick_oven", "covered_well" ) ) {
+        st.overlay = true;
+        st.floor_material = vm_material::concrete;
+        st.floor_color = material_color( vm_material::concrete, base );
+        st.kind = vm_kind::machine;
+        st.color = has_any( id, "apiary", "beehive" ) ? rgb( 200, 170, 80 ) : has( id, "brick_oven" ) ?
+                   rgb( 150, 72, 55 ) : voxel_mix( base, rgb( 150, 150, 155 ), 0.5f );
+        st.color2 = has( id, "pump" ) ? rgb( 210, 60, 50 ) : rgb( 80, 180, 120 );
+        st.param = has_any( id, "pump", "atm", "ticket", "vending", "slot" ) ? 1 : 0;
+        return st;
+    }
+    if( has_any( id, "radio_tower", "utility_light", "tower" ) ) {
+        st.overlay = true;
+        st.floor_material = vm_material::concrete;
+        st.floor_color = material_color( vm_material::concrete, base );
+        st.kind = vm_kind::pole;
+        st.color = rgb( 140, 140, 145 );
+        st.param = 3;
+        return st;
+    }
+    if( has_any( id, "stump", "t_trunk" ) ) {
+        vegetation_floor();
+        st.kind = vm_kind::stump;
+        st.color = rgb( 92, 68, 48 );
+        return st;
+    }
+    if( has( id, "grave" ) ) {
+        st.overlay = true;
+        st.floor_material = vm_material::grass;
+        st.floor_color = material_color( vm_material::grass, base );
+        st.kind = vm_kind::grave;
+        st.color = rgb( 150, 148, 142 );
+        return st;
+    }
+    if( has( id, "ramp" ) ) {
+        st.kind = vm_kind::ramp;
+        st.color = has( id, "earth" ) ? material_color( vm_material::dirt, base ) : rgb( 140, 138, 132 );
+        st.param = has( id, "high" ) ? 1 : 0;
+        return st;
+    }
+    if( has_any( id, "bamboo", "mega_fern", "fern" ) ) {
+        vegetation_floor();
+        st.kind = has( id, "fern" ) ? vm_kind::shrub : vm_kind::young_tree;
+        st.color = rgb( 96, 150, 64 );
+        st.color2 = rgb( 150, 170, 80 );
+        st.spin = true;
+        st.variants = 3;
+        return st;
+    }
+    if( has_any( id, "slime", "goo", "tidepool" ) ) {
+        st.kind = vm_kind::water;
+        st.color = has( id, "tidepool" ) ? rgb( 62, 112, 162 ) : soften( base );
+        st.variants = 4;
+        st.spin = true;
+        return st;
+    }
+    if( has( id, "den" ) ) {
+        st.overlay = true;
+        st.floor_material = vm_material::dirt;
+        st.floor_color = material_color( vm_material::dirt, base );
+        st.kind = vm_kind::mound;
+        st.color = rgb( 110, 82, 56 );
+        st.param = 1;
+        return st;
+    }
+    if( has( id, "roof" ) ) {
+        st.kind = vm_kind::floor;
+        st.material = vm_material::concrete;
+        st.variants = 4;
+        st.color = has( id, "shingle" ) ? rgb( 96, 62, 52 ) : has( id, "thatch" ) ? rgb( 176, 150, 82 ) :
+                   has( id, "tar" ) ? rgb( 54, 54, 58 ) : has( id, "canvas" ) ? rgb( 150, 140, 110 ) :
+                   has( id, "glass" ) ? rgb( 150, 200, 230 ) : rgb( 120, 118, 114 );
+        return st;
+    }
+    if( has_any( id, "bridge", "dock", "pontoon", "catwalk", "boardwalk" ) ) {
+        st.kind = vm_kind::floor;
+        st.material = vm_material::wood;
+        st.variants = 4;
+        st.color = has( id, "riverbridge" ) ? rgb( 150, 148, 142 ) : rgb( 130, 100, 70 );
+        return st;
+    }
+    if( has_any( id, "elevator", "conveyor", "manhole_cover" ) ) {
+        st.kind = vm_kind::floor;
+        st.material = vm_material::metal;
+        st.variants = 4;
+        st.color = material_color( vm_material::metal, base );
+        return st;
+    }
+    if( has( id, "zebra" ) ) {
+        st.kind = vm_kind::floor;
+        st.material = vm_material::pavement;
+        st.color = material_color( vm_material::pavement, base );
+        st.param = 4;
+        return st;
+    }
+    if( has( id, "groundcover" ) ) {
+        st.kind = vm_kind::floor;
+        st.material = vm_material::grass;
+        st.color = has( id, "barren" ) ? rgb( 132, 120, 70 ) : material_color( vm_material::grass, base );
+        st.variants = 4;
+        st.spin = true;
+        return st;
+    }
+    if( t.movecost == 0 && t.has_flag( ter_furn_flag::TFLAG_TRANSPARENT ) ) {
+        st.overlay = true;
+        st.floor_material = vm_material::concrete;
+        st.floor_color = material_color( vm_material::concrete, base );
+        st.kind = vm_kind::fence;
+        st.fence = true;
+        st.variant = 1;
+        st.color = voxel_mix( base, rgb( 120, 122, 126 ), 0.5f );
+        return st;
+    }
     classify_floor( id, base, st );
     return st;
 }
+
+bool classify_furniture_extra( const std::string &id, const voxel_rgb &base, tile_style &st );
 
 tile_style classify_furniture( const furn_t &f )
 {
@@ -607,6 +769,9 @@ tile_style classify_furniture( const furn_t &f )
     const voxel_rgb base = soften( to_rgb( f.color() ) );
     st.color = base;
     st.color2 = voxel_shade( base, 0.8f );
+    if( classify_furniture_extra( id, base, st ) ) {
+        return st;
+    }
     const voxel_rgb white = rgb( 228, 228, 222 );
     const voxel_rgb wood = rgb( 128, 90, 58 );
     const voxel_rgb metal = rgb( 128, 133, 138 );
@@ -715,6 +880,154 @@ tile_style classify_furniture( const furn_t &f )
         st.kind = vm_kind::furniture;
     }
     return st;
+}
+
+bool classify_furniture_extra( const std::string &id, const voxel_rgb &base, tile_style &st )
+{
+    const voxel_rgb metal = rgb( 128, 133, 138 );
+    const auto size_param = [&id]() -> uint8_t {
+        return has( id, "tall" ) ? 2 : has( id, "mid" ) ? 1 : 0;
+    };
+    if( has_any( id, "f_fog", "swamp_gas", "f_clear", "absence", "no_item", "region_" ) ) {
+        st.draw = false;
+        return true;
+    }
+    if( has_any( id, "_stack", "stack_", "pallet", "beach_log" ) ) {
+        st.kind = vm_kind::stack;
+        st.param = has( id, "pallet" ) ? 0 : size_param();
+        st.color = has_any( id, "brick" ) ? rgb( 150, 72, 55 ) : has( id, "adobe" ) ? rgb( 170, 130, 90 ) :
+                   has_any( id, "pipe", "rebar" ) ? rgb( 110, 110, 115 ) : has( id, "cement" ) ? rgb( 170, 170, 165 ) :
+                   has_any( id, "plank", "pallet" ) ? rgb( 160, 125, 80 ) : rgb( 115, 85, 55 );
+        return true;
+    }
+    if( has_any( id, "earthbag", "gravelbag" ) ) {
+        st.kind = vm_kind::stack;
+        st.param = has( id, "half" ) ? 1 : 3;
+        st.color = has( id, "gravel" ) ? rgb( 140, 135, 125 ) : rgb( 160, 135, 95 );
+        return true;
+    }
+    if( has_any( id, "mound", "midden", "compost" ) ) {
+        st.kind = vm_kind::mound;
+        st.param = size_param();
+        st.color = has( id, "sand" ) ? rgb( 205, 185, 130 ) : has_any( id, "gravel", "pebble" ) ? rgb( 140,
+                   135, 125 ) : has( id, "clay" ) ? rgb( 150, 92, 60 ) : has( id, "glass" ) ? rgb( 170, 210, 220 ) :
+                   rgb( 110, 82, 56 );
+        st.spin = true;
+        return true;
+    }
+    if( has_any( id, "groundsheet", "tarp", "_mat", "tatami", "canvas_floor", "woodchips", "f_slab",
+                 "f_lane" ) ) {
+        st.kind = vm_kind::mat;
+        return true;
+    }
+    if( has_any( id, "canvas_wall", "skin_wall", "curtain", "room_divider", "canvas_door", "skin_door",
+                 "beaded_door", "mirror" ) ) {
+        st.kind = vm_kind::panel;
+        st.oriented = true;
+        st.variant = ( has( id, "_o" ) || has( id, "open" ) ) ? 1 : 0;
+        if( has( id, "mirror" ) ) {
+            st.color = rgb( 190, 210, 225 );
+        }
+        return true;
+    }
+    if( has_any( id, "hedge", "topiary" ) ) {
+        st.kind = vm_kind::hedge;
+        st.param = has_any( id, "tall", "topiary" ) ? 1 : 0;
+        st.color = rgb( 58, 108, 42 );
+        return true;
+    }
+    if( has_any( id, "brambles", "knotweed", "japanese" ) ) {
+        st.kind = vm_kind::shrub;
+        st.color = rgb( 70, 100, 45 );
+        st.spin = true;
+        st.variants = 3;
+        return true;
+    }
+    if( has_any( id, "asparagus", "carrot", "burdock", "chicory", "dogbane", "mustard", "salsify",
+                 "thistle", "wintergreen", "selfheal", "loosestrife", "susan", "artichoke", "maianthemum",
+                 "sarsaparilla", "wild_rice", "kelp", "algae", "sea_lettuce", "seaweed", "weed", "anemone",
+                 "sponge", "lichen" ) ) {
+        st.kind = vm_kind::flower;
+        st.variants = 3;
+        return true;
+    }
+    if( has_any( id, "grave", "sarcophagus", "battlefield_cross", "monument" ) ) {
+        st.kind = vm_kind::grave;
+        st.color = rgb( 150, 148, 142 );
+        return true;
+    }
+    if( has( id, "anvil" ) ) {
+        st.kind = vm_kind::anvil;
+        st.color = rgb( 60, 62, 66 );
+        return true;
+    }
+    if( has_any( id, "mannequin", "training_dummy", "impaled" ) ) {
+        st.kind = vm_kind::humanoid;
+        st.color = has( id, "impaled" ) ? rgb( 170, 130, 110 ) : rgb( 215, 200, 175 );
+        st.color2 = has( id, "impaled" ) ? rgb( 90, 100, 70 ) : rgb( 215, 200, 175 );
+        return true;
+    }
+    if( has_any( id, "flagpole", "utility_pole", "antenna", "satellite", "dish", "chimney", "vent_pipe",
+                 "iv_pole", "IV_pole", "wind_vane", "hoist", "ladder", "rope_up", "vine_up", "web_up", "pylon",
+                 "beacon", "tower" ) ) {
+        st.kind = vm_kind::pole;
+        st.color = has_any( id, "wooden", "ladder", "rope", "vine" ) ? rgb( 120, 88, 56 ) : rgb( 140, 140,
+                   145 );
+        st.color2 = has( id, "flag" ) ? rgb( 60, 80, 170 ) : base;
+        st.param = has( id, "flag" ) ? 2 : has_any( id, "antenna", "satellite", "dish" ) ? 3 : has( id,
+                   "utility" ) ? 1 : 0;
+        return true;
+    }
+    if( has_any( id, "generator", "compressor", "conditioner", "air_filter", "lathe", "press", "saw",
+                 "drill", "mixer", "centrifuge", "microscope", "MRI", "CTscan", "xray", "NMR", "HPLC", "f_GC",
+                 "f_MS", "autoclave", "dialysis", "ventilator", "oxygen", "water_heater", "purifier", "server",
+                 "robotic_arm", "shredder", "router", "planer", "jointer", "still", "fume_hood", "fryer", "atm",
+                 "piano", "organ", "entertainment", "treadmill", "ergometer", "exercise", "autodoc", "capacitor",
+                 "reactor", "fuel_cell", "charger", "printer", "scanner", "pump", "tire_changer", "hammer",
+                 "ball_mach", "churn", "mill", "detector", "shaker", "spinwheel", "styling", "control_station",
+                 "melchior", "balthazar", "boiler", "cooler", "solar", "housing", "compact", "mortar", "bellows",
+                 "scutch", "shear", "zapper", "concentrator", "conduit", "cable", "booster" ) ) {
+        st.kind = vm_kind::machine;
+        st.color = has_any( id, "piano", "organ", "spinwheel", "churn", "mill", "bellows" ) ? rgb( 90, 60,
+                   40 ) : voxel_mix( base, metal, 0.6f );
+        st.color2 = rgb( 70, 170, 120 );
+        return true;
+    }
+    if( has_any( id, "hammock" ) ) {
+        st.kind = vm_kind::bed;
+        st.color = rgb( 128, 90, 58 );
+        st.color2 = base;
+        return true;
+    }
+    if( has_any( id, "beanbag", "pillow_fort" ) ) {
+        st.kind = vm_kind::sofa;
+        return true;
+    }
+    if( has_any( id, "birdbath", "gazing_ball", "sand_castle", "bitts", "cleat", "doll", "egg_sack",
+                 "pod", "fungal", "tendril", "spike", "meathook", "shackle" ) ) {
+        st.kind = vm_kind::boulder;
+        st.spin = true;
+        return true;
+    }
+    if( has_any( id, "shower", "clothing_rail", "torah_ark" ) ) {
+        st.kind = vm_kind::cabinet;
+        return true;
+    }
+    if( has_any( id, "target", "bulletin" ) ) {
+        st.kind = vm_kind::sign;
+        return true;
+    }
+    if( has_any( id, "punching_bag" ) ) {
+        st.kind = vm_kind::barrel;
+        st.color = rgb( 150, 40, 40 );
+        return true;
+    }
+    if( has_any( id, "vent_", "groundsheet", "ground_" ) ) {
+        st.kind = vm_kind::mat;
+        st.color = rgb( 70, 70, 74 );
+        return true;
+    }
+    return false;
 }
 
 const voxel_rgb &palette_pick( const std::vector<voxel_rgb> &p, uint32_t h )
@@ -826,6 +1139,110 @@ vm_key monster_key( const monster &m )
     return k;
 }
 
+vm_kind item_kind( const item &it )
+{
+    if( it.is_corpse() ) {
+        return vm_kind::item_corpse;
+    }
+    if( it.is_gun() ) {
+        return vm_kind::item_gun;
+    }
+    if( it.is_ammo() || it.is_magazine() ) {
+        return vm_kind::item_ammo;
+    }
+    if( it.is_book() ) {
+        return vm_kind::item_book;
+    }
+    if( it.is_armor() ) {
+        return vm_kind::item_clothing;
+    }
+    const std::string id = it.typeId().str();
+    if( has_any( id, "bottle", "jar", "jug", "canteen", "flask", "thermos", "can_", "_can" ) ) {
+        return vm_kind::item_bottle;
+    }
+    if( it.is_comestible() ) {
+        return vm_kind::item_food;
+    }
+    if( has_any( id, "knife", "sword", "machete", "blade", "katana", "axe", "spear", "bayonet",
+                 "dagger", "sabre", "scythe", "cleaver", "glaive", "halberd" ) ) {
+        return vm_kind::item_blade;
+    }
+    if( it.is_tool() || it.is_melee() ) {
+        return vm_kind::item_tool;
+    }
+    if( it.is_container() ) {
+        return vm_kind::item_food;
+    }
+    return vm_kind::item_pile;
+}
+
+uint8_t nearest_pants( const voxel_rgb &c )
+{
+    static const std::array<voxel_rgb, 8> palette = { {
+            rgb( 55, 60, 85 ), rgb( 40, 40, 44 ), rgb( 110, 90, 60 ), rgb( 70, 85, 55 ),
+            rgb( 130, 125, 115 ), rgb( 90, 40, 40 ), rgb( 180, 175, 165 ), rgb( 60, 75, 110 )
+        }
+    };
+    int best = 0;
+    int best_d = 1 << 30;
+    for( int i = 0; i < 8; ++i ) {
+        const int dr = palette[i].r - c.r;
+        const int dg = palette[i].g - c.g;
+        const int db = palette[i].b - c.b;
+        const int d = dr * dr + dg * dg + db * db;
+        if( d < best_d ) {
+            best_d = d;
+            best = i;
+        }
+    }
+    return static_cast<uint8_t>( best );
+}
+
+vm_key character_key( const Character &ch, const voxel_rgb &skin, const voxel_rgb &shirt,
+                      uint8_t hair, bool backpack )
+{
+    static const bodypart_str_id torso( "torso" );
+    static const bodypart_str_id leg_l( "leg_l" );
+    vm_key k;
+    k.kind = vm_kind::humanoid;
+    k.color = skin;
+    k.color2 = shirt;
+    voxel_rgb pants = rgb( 55, 60, 85 );
+    bool has_pack = false;
+    for( const item_location &loc : ch.get_visible_worn_items() ) {
+        if( !loc ) {
+            continue;
+        }
+        const voxel_rgb c = soften( to_rgb( loc->color() ) );
+        if( loc->covers( torso.id() ) ) {
+            k.color2 = c;
+        }
+        if( loc->covers( leg_l.id() ) ) {
+            pants = c;
+        }
+        if( has_any( loc->typeId().str(), "backpack", "rucksack", "duffel", "pack" ) ) {
+            has_pack = true;
+        }
+    }
+    k.variant = static_cast<uint8_t>( hair % 3 + 3 * nearest_pants( pants ) );
+    k.param = backpack || has_pack ? 1 : 0;
+    return k;
+}
+
+std::optional<vm_key> held_key( const Character &ch )
+{
+    const item_location weapon = ch.get_wielded_item();
+    if( !weapon ) {
+        return std::nullopt;
+    }
+    vm_key k;
+    k.kind = vm_kind::held;
+    k.color = soften( to_rgb( weapon->color() ) );
+    const vm_kind ik = item_kind( *weapon );
+    k.param = ik == vm_kind::item_gun ? 0 : ik == vm_kind::item_blade ? 1 : 2;
+    return k;
+}
+
 class voxel_renderer
 {
     public:
@@ -884,6 +1301,7 @@ class voxel_renderer
 
         tripoint_bub_ms last_avatar_pos;
         float avatar_yaw = 0.0f;
+        uint32_t weather_frame = 0;
 };
 
 const char *main_vs = R"(#version 330 core
@@ -960,6 +1378,7 @@ void main()
     float sh = u_use_shadow > 0.5 ? shadow_at() : 1.0;
     vec3 col = v_color * ( v_light * shape + u_daylight * sun * sh * 0.5 * min( v_light, 1.0 ) );
     col = max( col, v_color * v_emissive );
+    col = vec3( 1.0 ) - exp( -col * 2.1 );
     float g = dot( col, vec3( 0.299, 0.587, 0.114 ) );
     col = mix( col, vec3( g ) * vec3( 0.78, 0.86, 1.05 ), v_desat );
     float d = length( v_world.xz - u_focus.xz );
@@ -1288,13 +1707,13 @@ void voxel_renderer::add_style( const tile_style &st, const tripoint_bub_ms &p, 
 
 float light_value( float ambient, lit_level ll )
 {
-    float b = 0.2f + 0.85f * std::clamp( std::sqrt( std::max( ambient, 0.0f ) / 90.0f ), 0.0f, 1.0f );
+    float b = 0.3f + 0.8f * std::clamp( std::sqrt( std::max( ambient, 0.0f ) / 80.0f ), 0.0f, 1.0f );
     if( ll == lit_level::LOW ) {
         b = std::min( b, 0.42f );
     } else if( ll == lit_level::BRIGHT ) {
         b = std::max( b, 0.95f );
     }
-    return std::clamp( b, 0.22f, 1.1f );
+    return std::clamp( b, 0.3f, 1.1f );
 }
 
 void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float daylight )
@@ -1332,48 +1751,124 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                     const optional_vpart_position ovp = here.veh_at( p );
                     if( ovp ) {
                         const vehicle &veh = ovp->vehicle();
-                        const vpart_display vd = veh.get_display_of_tile( ovp->mount_pos() );
-                        if( !vd.id.is_null() ) {
-                            const vpart_info &info = vd.id.obj();
-                            vm_key vk;
-                            vk.color = soften( to_rgb( vd.color ) );
-                            vk.color2 = voxel_shade( vk.color, 0.85f );
-                            if( info.has_flag( VPFLAG_WHEEL ) ) {
-                                vk.kind = vm_kind::veh_wheel;
-                            } else if( info.has_flag( VPFLAG_WINDOW ) ) {
-                                vk.kind = vm_kind::veh_window;
-                            } else if( info.has_flag( VPFLAG_OPAQUE ) && info.has_flag( VPFLAG_OBSTACLE ) ) {
-                                vk.kind = vm_kind::veh_body;
-                            } else if( info.has_flag( "SEAT" ) || info.has_flag( "BED" ) ) {
-                                vk.kind = vm_kind::veh_seat;
-                                vk.color2 = rgb( 70, 60, 55 );
-                            } else if( info.has_flag( VPFLAG_ENGINE ) || info.has_flag( VPFLAG_CARGO ) ||
-                                       info.has_flag( VPFLAG_FLUIDTANK ) || info.has_flag( VPFLAG_TURRET_CONTROLS ) ) {
-                                vk.kind = vm_kind::veh_part;
-                            } else {
-                                vk.kind = vm_kind::veh_frame;
+                        vm_key vk;
+                        vk.kind = vm_kind::vehicle;
+                        vk.color2 = rgb( 70, 60, 55 );
+                        bool have_body_color = false;
+                        bool any = false;
+                        for( const int idx : veh.parts_at_relative( ovp->mount_pos(), true ) ) {
+                            const vehicle_part &vp = veh.part( idx );
+                            if( vp.removed ) {
+                                continue;
+                            }
+                            any = true;
+                            const vpart_info &vi = vp.info();
+                            const voxel_rgb pc = soften( to_rgb( vi.color ) );
+                            if( vp.is_broken() ) {
+                                vk.variant |= vmx_broken;
+                            }
+                            if( vi.has_flag( VPFLAG_WHEEL ) ) {
+                                vk.param |= vmv_wheel;
+                            }
+                            if( vi.has_flag( VPFLAG_WINDOW ) ) {
+                                vk.param |= vmv_window;
+                            }
+                            if( vi.has_flag( VPFLAG_OPENABLE ) && !vi.has_flag( VPFLAG_WINDOW ) ) {
+                                vk.variant |= vp.open ? vmx_door_open : vmx_door;
+                                if( !have_body_color ) {
+                                    vk.color = pc;
+                                    have_body_color = true;
+                                }
+                            } else if( vi.has_flag( VPFLAG_OPAQUE ) && vi.has_flag( VPFLAG_OBSTACLE ) ) {
+                                vk.param |= vmv_board;
+                                vk.color = pc;
+                                have_body_color = true;
+                            }
+                            if( vi.has_flag( "SEAT" ) || vi.has_flag( "BED" ) ) {
+                                vk.param |= vmv_seat;
+                                vk.color2 = voxel_shade( pc, 0.8f );
+                            }
+                            if( vi.has_flag( VPFLAG_ROOF ) ) {
+                                vk.param |= vmv_roof;
+                                if( !have_body_color ) {
+                                    vk.color = pc;
+                                }
+                            }
+                            if( vi.has_flag( VPFLAG_ENGINE ) ) {
+                                vk.param |= vmv_engine;
+                            }
+                            if( vi.has_flag( VPFLAG_CONE_LIGHT ) || vi.has_flag( VPFLAG_WIDE_CONE_LIGHT ) ||
+                                vi.has_flag( VPFLAG_HALF_CIRCLE_LIGHT ) ) {
+                                vk.param |= vmv_light;
+                            }
+                            if( vi.has_flag( "TURRET" ) ) {
+                                vk.param |= vmv_turret;
+                            }
+                            if( vi.has_flag( VPFLAG_CARGO ) && !vi.has_flag( VPFLAG_WHEEL ) ) {
+                                vk.variant |= vmx_cargo;
+                            }
+                            if( vi.has_flag( VPFLAG_FLUIDTANK ) ) {
+                                vk.variant |= vmx_tank;
+                            }
+                            if( vi.has_flag( VPFLAG_SOLAR_PANEL ) ) {
+                                vk.variant |= vmx_solar;
+                            }
+                            if( !have_body_color && vi.location == vpart_location_id( "structure" ) ) {
+                                vk.color = pc;
+                            }
+                        }
+                        if( any ) {
+                            if( vk.color.r == 0 && vk.color.g == 0 && vk.color.b == 0 ) {
+                                vk.color = rgb( 120, 122, 128 );
+                            }
+                            if( vk.variant & vmx_cargo && vk.param & vmv_seat ) {
+                                vk.variant &= ~vmx_cargo;
                             }
                             const float yaw = static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f;
                             add( main_lists, vk, p, 0.0f, yaw, light, 0.0f );
                         }
                     }
+                    if( here.can_see_trap_at( p, you ) ) {
+                        const trap &tr = here.tr_at( p );
+                        vm_key tk;
+                        tk.kind = vm_kind::trap;
+                        tk.color = soften( to_rgb( tr.color ) );
+                        add( main_lists, tk, p, voxel_size, 0.0f, light, 0.0f );
+                    }
                     if( here.has_items( p ) ) {
                         map_stack stack = here.i_at( p );
                         int count = 0;
-                        nc_color top = c_white;
+                        const item *top = nullptr;
                         for( const item &it : stack ) {
                             if( count == 0 ) {
-                                top = it.color();
+                                top = &it;
                             }
                             ++count;
                         }
-                        vm_key ik;
-                        ik.kind = vm_kind::item_pile;
-                        ik.variant = static_cast<uint8_t>( std::min( count, 3 ) - 1 + 3 * ( voxel_hash( x, y, z,
-                                                           5 ) % 3 ) );
-                        const float lift = ovp ? voxel_size * 4.0f : furniture_style( here.furn( p ) ).kind ==
-                                           vm_kind::table && here.has_furn( p ) ? voxel_size * 6.0f : voxel_size;
-                        add( main_lists, ik, p, lift, 0.0f, light, 0.0f, 1.0f, soften( to_rgb( top ) ) );
+                        const float lift = ovp ? voxel_size * 4.0f : here.has_furn( p ) &&
+                                           furniture_style( here.furn( p ) ).kind == vm_kind::table ? voxel_size * 6.0f : voxel_size;
+                        const uint32_t ih = voxel_hash( x, y, z, 5 );
+                        if( top ) {
+                            vm_key ik;
+                            ik.kind = item_kind( *top );
+                            ik.color = soften( to_rgb( top->color() ) );
+                            if( ik.kind == vm_kind::item_corpse ) {
+                                ik.color = voxel_mix( ik.color, rgb( 140, 120, 100 ), 0.5f );
+                            }
+                            if( ik.kind == vm_kind::item_pile ) {
+                                ik.variant = static_cast<uint8_t>( std::min( count, 3 ) - 1 + 3 * ( ih % 3 ) );
+                                add( main_lists, ik, p, lift, 0.0f, light, 0.0f, 1.0f, ik.color );
+                            } else {
+                                ik.variant = static_cast<uint8_t>( ih % 2 );
+                                add( main_lists, ik, p, lift, static_cast<float>( ih % 8 ) * pi * 0.25f, light, 0.0f );
+                            }
+                        }
+                        if( count > 1 ) {
+                            vm_key pk;
+                            pk.kind = vm_kind::item_pile;
+                            pk.variant = static_cast<uint8_t>( std::min( count - 1, 3 ) - 1 + 3 * ( ( ih >> 4 ) % 3 ) );
+                            add( main_lists, pk, p, lift, pi * 0.5f, light, 0.0f, 0.8f, rgb( 200, 190, 170 ) );
+                        }
                     }
                     const field &fld = here.field_at( p );
                     const field_type_id ftype = fld.displayed_field_type();
@@ -1490,14 +1985,18 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         return std::max( light_value( here.ambient_light_at( p ), ll ), 0.5f );
     };
 
+    const auto add_character = [&]( const Character & ch, const tripoint_bub_ms & p, const vm_key & k,
+    float yaw ) {
+        const float light = creature_light( p );
+        const float scale = size_scale( ch.get_size() );
+        add( main_lists, k, p, voxel_size, yaw, light, 0.0f, scale );
+        if( const std::optional<vm_key> hk = held_key( ch ) ) {
+            add( main_lists, *hk, p, voxel_size, yaw, light, 0.0f, scale );
+        }
+    };
     if( in_view( you_pos ) ) {
-        vm_key k;
-        k.kind = vm_kind::humanoid;
-        k.color = rgb( 226, 184, 146 );
-        k.color2 = rgb( 58, 98, 168 );
-        k.param = 1;
-        add( main_lists, k, you_pos, voxel_size, avatar_yaw, creature_light( you_pos ), 0.0f,
-             size_scale( you.get_size() ) );
+        add_character( you, you_pos, character_key( you, rgb( 226, 184, 146 ), rgb( 58, 98, 168 ), 0,
+                       false ), avatar_yaw );
     }
     for( const npc &guy : g->all_npcs() ) {
         const tripoint_bub_ms p = guy.pos_bub( here );
@@ -1505,13 +2004,9 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
             continue;
         }
         const uint32_t h = string_hash( guy.get_name() );
-        vm_key k;
-        k.kind = vm_kind::humanoid;
-        k.color = palette_pick( skin_palette(), h );
-        k.color2 = palette_pick( shirt_palette(), h >> 5 );
-        k.variant = static_cast<uint8_t>( h % 3 );
-        add( main_lists, k, p, voxel_size, face_towards( p, you_pos ), creature_light( p ), 0.0f,
-             size_scale( guy.get_size() ) );
+        add_character( guy, p, character_key( guy, palette_pick( skin_palette(), h ),
+                                              palette_pick( shirt_palette(), h >> 5 ), static_cast<uint8_t>( h % 3 ), false ),
+                       face_towards( p, you_pos ) );
     }
     for( const monster &mon : g->all_monsters() ) {
         const tripoint_bub_ms p = mon.pos_bub( here );
@@ -1522,11 +2017,79 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
              creature_light( p ), 0.0f, size_scale( mon.get_size() ) );
     }
 
-    if( center != you_pos ) {
+    const weather_animation_t &anim = get_weather().weather_id->weather_animation;
+    if( anim.symbol != NULL_UNICODE && center.z() >= 0 && get_option<bool>( "ANIMATION_RAIN" ) ) {
+        vm_key wk;
+        const voxel_rgb anim_color = to_rgb( anim.color );
+        const bool snowy = anim.symbol == U'*' || ( anim_color.r > 200 && anim_color.g > 200 &&
+                           anim_color.b > 200 );
+        wk.kind = snowy ? vm_kind::snow : vm_kind::rain;
+        wk.color = snowy ? voxel_mix( anim_color, rgb( 240, 244, 252 ), 0.5f ) : voxel_mix( anim_color, rgb( 150,
+                   175, 215 ), 0.6f );
+        const int drops = std::clamp( static_cast<int>( anim.factor * radius * radius * 12.0f ), 60, 1200 );
+        const uint32_t frame_seed = static_cast<uint32_t>( to_turns<int>( calendar::turn -
+                                    calendar::turn_zero ) ) * 7u + ++weather_frame;
+        for( int i = 0; i < drops; ++i ) {
+            const int dx = static_cast<int>( voxel_hash( i, 1, 0, frame_seed ) % ( radius * 2 + 1 ) ) - radius;
+            const int dy = static_cast<int>( voxel_hash( i, 2, 0, frame_seed ) % ( radius * 2 + 1 ) ) - radius;
+            const tripoint_bub_ms wp( center.x() + dx, center.y() + dy, center.z() );
+            if( !here.inbounds( wp ) || !here.is_outside( wp ) ) {
+                continue;
+            }
+            const float h = voxel_noise( i, 3, 0, frame_seed ) * level_height * 1.6f;
+            add( main_lists, wk, wp, h, 0.0f, 1.0f, 0.0f );
+        }
+    }
+
+    if( center != you_pos && overlay_state.cursors.empty() ) {
         vm_key k;
         k.kind = vm_kind::cursor;
         k.color = rgb( 255, 220, 60 );
         add( main_lists, k, center, 0.0f, 0.0f, 1.0f, 0.0f );
+    }
+    for( const tripoint_bub_ms &c : overlay_state.cursors ) {
+        vm_key k;
+        k.kind = vm_kind::cursor;
+        k.color = rgb( 255, 220, 60 );
+        add( main_lists, k, c, 0.0f, 0.0f, 1.0f, 0.0f );
+    }
+    for( const tripoint_bub_ms &c : overlay_state.highlights ) {
+        vm_key k;
+        k.kind = vm_kind::marker;
+        k.color = rgb( 120, 220, 255 );
+        add( main_lists, k, c, voxel_size * 1.5f, 0.0f, 1.0f, 0.0f );
+    }
+    for( size_t i = 0; i < overlay_state.line.size(); ++i ) {
+        vm_key k;
+        k.kind = vm_kind::marker;
+        k.color = i + 1 == overlay_state.line.size() ? rgb( 255, 80, 60 ) : rgb( 255, 200, 70 );
+        add( main_lists, k, overlay_state.line[i], voxel_size * 1.5f, 0.0f, 1.0f, 0.0f );
+    }
+    if( overlay_state.bullet ) {
+        vm_key k;
+        k.kind = vm_kind::bolt;
+        k.color = rgb( 255, 230, 140 );
+        add( main_lists, k, overlay_state.bullet_pos, voxel_size * 4.0f, 0.0f, 1.0f, 0.0f );
+    }
+    const auto add_blast = [&]( const tripoint_bub_ms & bp, uint8_t power ) {
+        vm_key k;
+        k.kind = vm_kind::fire;
+        k.variant = power;
+        add( main_lists, k, bp, voxel_size, static_cast<float>( voxel_hash( bp.x(), bp.y(), 0,
+                3 ) % 4 ) * pi * 0.5f, 1.0f, 0.0f, 1.1f );
+    };
+    if( overlay_state.explosion ) {
+        const int r = overlay_state.explosion_radius;
+        for( int dy = -r; dy <= r; ++dy ) {
+            for( int dx = -r; dx <= r; ++dx ) {
+                if( dx * dx + dy * dy <= r * r ) {
+                    add_blast( overlay_state.explosion_center + tripoint_rel_ms( dx, dy, 0 ), 2 );
+                }
+            }
+        }
+    }
+    for( const tripoint_bub_ms &bp : overlay_state.custom_explosion ) {
+        add_blast( bp, 1 );
     }
 }
 
@@ -1774,6 +2337,11 @@ point_rel_ms rotate_octants( const point_rel_ms &d, int k )
 namespace voxel_view
 {
 
+void set_overlays( const overlays &state )
+{
+    overlay_state = state;
+}
+
 bool active()
 {
     return use_tiles && get_option<bool>( "VOXEL_VIEW" ) && !renderer().failed;
@@ -1848,6 +2416,10 @@ void shutdown()
 
 namespace voxel_view
 {
+
+void set_overlays( const overlays & )
+{
+}
 
 bool active()
 {

@@ -38,6 +38,7 @@
 #include "smooth_lighting.h"
 #include "type_id.h"
 #include "units.h"
+#include "voxel_view.h"
 #include "weather.h"
 #include "weighted_list.h"
 
@@ -946,6 +947,7 @@ class cata_tiles
         void flush_for_external_draw() {
             flush_sprite_shader_for_untextured_draw();
         }
+        void export_voxel_overlays( voxel_view::overlays &out ) const;
 
         // Animation layers
         void init_explosion( const tripoint_bub_ms &p, int radius );

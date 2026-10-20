@@ -62,7 +62,55 @@ enum class vm_kind : uint8_t {
     fire,
     splat,
     cloud,
-    cursor
+    cursor,
+    machine,
+    pole,
+    stack,
+    mound,
+    mat,
+    panel,
+    pillar,
+    stump,
+    ramp,
+    grave,
+    anvil,
+    hedge,
+    trap,
+    vehicle,
+    item_gun,
+    item_blade,
+    item_tool,
+    item_clothing,
+    item_food,
+    item_bottle,
+    item_book,
+    item_ammo,
+    item_corpse,
+    held,
+    rain,
+    snow,
+    bolt,
+    marker
+};
+
+enum vm_vehicle_bits : uint8_t {
+    vmv_wheel = 1,
+    vmv_board = 2,
+    vmv_window = 4,
+    vmv_seat = 8,
+    vmv_roof = 16,
+    vmv_engine = 32,
+    vmv_light = 64,
+    vmv_turret = 128
+};
+
+enum vm_vehicle_extra_bits : uint8_t {
+    vmx_cargo = 1,
+    vmx_door_open = 2,
+    vmx_broken = 4,
+    vmx_tank = 8,
+    vmx_solar = 16,
+    vmx_door = 32
 };
 
 enum class vm_material : uint8_t {

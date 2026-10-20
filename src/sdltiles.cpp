@@ -4138,6 +4138,9 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &w )
         if( voxel_view::active() ) {
             const int vw = TERRAIN_WINDOW_TERM_WIDTH * font->width;
             const int vh = TERRAIN_WINDOW_TERM_HEIGHT * font->height;
+            voxel_view::overlays state;
+            tilecontext->export_voxel_overlays( state );
+            voxel_view::set_overlays( state );
             if( voxel_view::render( g->ter_view_p, vw, vh, voxel_pixels ) ) {
                 if( !voxel_texture || voxel_texture_size != point( vw, vh ) ) {
                     voxel_texture = CreateTexture( renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING,

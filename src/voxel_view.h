@@ -6,13 +6,27 @@
 #include <optional>
 #include <vector>
 
+#include "coordinates.h"
 #include "coords_fwd.h"
 #include "point.h"
 
 namespace voxel_view
 {
 
+struct overlays {
+    bool explosion = false;
+    tripoint_bub_ms explosion_center;
+    int explosion_radius = 0;
+    std::vector<tripoint_bub_ms> custom_explosion;
+    bool bullet = false;
+    tripoint_bub_ms bullet_pos;
+    std::vector<tripoint_bub_ms> line;
+    std::vector<tripoint_bub_ms> cursors;
+    std::vector<tripoint_bub_ms> highlights;
+};
+
 bool active();
+void set_overlays( const overlays &state );
 bool render( const tripoint_bub_ms &center, int width, int height, std::vector<uint8_t> &pixels );
 void orbit( float dx, float dy );
 std::optional<tripoint_bub_ms> pick( const point &pixel, const point &size );
