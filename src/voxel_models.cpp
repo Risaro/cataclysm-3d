@@ -843,8 +843,8 @@ voxel_grid make_humanoid( const vm_key &k, uint32_t seed, bool zombie )
     g.box( 2, 12, 2, 6, 13, 6, hair, 0.08f, seed + 7 );
     g.box( 2, 10, 5, 6, 12, 6, hair, 0.08f, seed + 8 );
     const voxel_rgb eye = zombie ? rgb( 230, 60, 30 ) : rgb( 30, 30, 40 );
-    g.set( 2, 10, 2, eye );
-    g.set( 5, 10, 2, eye );
+    g.set( 3, 10, 2, eye );
+    g.set( 4, 10, 2, eye );
     if( zombie ) {
         g.set( 3, 9, 2, rgb( 90, 20, 20 ) );
         g.set( 4, 9, 2, rgb( 90, 20, 20 ) );
