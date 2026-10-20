@@ -8,6 +8,7 @@
       "random_rotation": true
     },
     { "id": "mon_zombie", "file": "monsters/zombie_red.vox" },
-    { "builtin": "chair", "file": "furniture/chair.vox", "tint": true }
+    { "builtin": "chair", "file": "furniture/chair.vox", "tint": true },
+    { "builtin": "crate", "file": "furniture/crate.obj" }
   ]
 }
