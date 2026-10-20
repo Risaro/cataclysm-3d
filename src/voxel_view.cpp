@@ -1871,6 +1871,15 @@ bool voxel_renderer::sprite_terrain( const tripoint_bub_ms &p, const std::string
         add( shadow_lists, k, p, 0.0f, 0.0f, 1.0f, 0.0f );
         return true;
     }
+    if( bg && ( st.overlay || bg->w > 1.01f || bg->h > 1.01f ) ) {
+        bg = nullptr;
+    }
+    if( bg == nullptr && st.overlay ) {
+        const char *ground = st.floor_material == vm_material::dirt ? "t_dirt" :
+                             st.floor_material == vm_material::concrete ? "t_pavement" :
+                             st.floor_material == vm_material::sand ? "t_sand" : "t_grass";
+        bg = atlas.fg( ground );
+    }
     if( bg ) {
         add_sprite( sprite_flat, *bg, pos, 0.0f, 0.004f, light, desat );
     } else if( st.overlay || st.kind == vm_kind::door_open ) {

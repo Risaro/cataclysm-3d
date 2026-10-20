@@ -4,6 +4,18 @@ A fork of Cataclysm: Dark Days Ahead that renders the game map as a real 3D scen
 saves and mods are untouched: the reality bubble is turned into a voxel world with an orbit camera,
 sun shadows, the game's own light map, smooth movement and 3D effects.
 
+<p align="center">
+    <img src="./doc/screenshots/voxel-rooftop.png" alt="Voxel style: rooftop with sun shadows" width="49%">
+    <img src="./doc/screenshots/sprites-rooftop.png" alt="Tileset sprites style: the same rooftop with UltimateCataclysm" width="49%">
+</p>
+<p align="center">
+    <img src="./doc/screenshots/voxel-field.png" alt="Voxel style: field with flowers" width="49%">
+    <img src="./doc/screenshots/sprites-forest.png" alt="Tileset sprites style: forest" width="49%">
+</p>
+<p align="center">
+    <img src="./doc/screenshots/voxel-parking.png" alt="Voxel style: parking lot with fences and lamps" width="80%">
+</p>
+
 * **Voxel style** - terrain, furniture, vehicles, items, creatures, fields and weather are built from
   procedurally generated voxel models.
 * **Tileset sprites style** - the ground is textured with your 2D tileset (UltimateCataclysm and
