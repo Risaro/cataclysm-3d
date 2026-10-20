@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <clocale>
 #include <cmath>
 #include <string>
 #include <map>
@@ -1342,6 +1343,7 @@ class voxel_renderer
         int model_for( const vm_key &key );
         int upload_model( const voxel_mesh &mesh, bool emissive );
         GLuint compile( const char *vs, const char *fs );
+        GLuint compile_program( const char *vs, const char *fs );
         void collect( const tripoint_bub_ms &center, int radius, float daylight );
         void draw_pass( instance_lists &lists, bool glass, GLuint program );
         void upload_instances( instance_lists &main, instance_lists &extra );
@@ -1645,6 +1647,16 @@ void main()
 
 
 GLuint voxel_renderer::compile( const char *vs, const char *fs )
+{
+    const char *current = std::setlocale( LC_NUMERIC, nullptr );
+    const std::string saved_locale = current ? current : "C";
+    std::setlocale( LC_NUMERIC, "C" );
+    const GLuint program = compile_program( vs, fs );
+    std::setlocale( LC_NUMERIC, saved_locale.c_str() );
+    return program;
+}
+
+GLuint voxel_renderer::compile_program( const char *vs, const char *fs )
 {
     voxel_gl_api &gl = voxel_gl();
     const auto stage = [&gl]( GLenum type, const char *src ) -> GLuint {
