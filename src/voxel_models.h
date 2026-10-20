@@ -90,7 +90,9 @@ enum class vm_kind : uint8_t {
     rain,
     snow,
     bolt,
-    marker
+    marker,
+    particle,
+    spark
 };
 
 enum vm_vehicle_bits : uint8_t {
@@ -146,7 +148,20 @@ struct vm_key {
 bool vm_is_emissive( vm_kind kind );
 const char *vm_kind_name( vm_kind kind );
 const char *vm_material_name( vm_material material );
-constexpr int vm_kind_count = static_cast<int>( vm_kind::marker ) + 1;
+constexpr int vm_kind_count = static_cast<int>( vm_kind::spark ) + 1;
+
+enum vm_part : uint8_t {
+    vmp_whole = 0,
+    vmp_body = 1,
+    vmp_leg_a = 2,
+    vmp_leg_b = 3,
+    vmp_arm_a = 4,
+    vmp_arm_b = 5
+};
+
+bool vm_has_limbs( vm_kind kind );
+float vm_limb_pivot_y( vm_kind kind, uint8_t param, uint8_t part );
+float vm_limb_pivot_z( vm_kind kind, uint8_t part );
 constexpr int vm_material_count = static_cast<int>( vm_material::log ) + 1;
 voxel_grid make_voxel_model( const vm_key &key );
 

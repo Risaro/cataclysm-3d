@@ -2629,6 +2629,46 @@ void options_manager::add_options_graphics()
 
         get_option( "VOXEL_CAMERA_ANGLE" ).setPrerequisite( "VOXEL_VIEW" );
 
+        add( "VOXEL_CAMERA_MODE", page_id, to_translation( "3D camera mode" ),
+             to_translation( "Orbit looks at the map from above, over the shoulder follows your character closely, first person looks through their eyes.  Switch it in game with Alt+C." ),
+        {
+            { "orbit", to_translation( "Orbit" ) },
+            { "shoulder", to_translation( "Over the shoulder" ) },
+            { "first_person", to_translation( "First person" ) }
+        },
+        "orbit", COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_CAMERA_MODE" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_SSAO", page_id, to_translation( "3D ambient occlusion" ),
+             to_translation( "If true, corners and contact points are darkened softly in the 3D view." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_SSAO" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_LIGHT_SHADOWS", page_id, to_translation( "3D light shadows" ),
+             to_translation( "If true, walls block the light of fires, lamps and flashlights in the 3D view." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_LIGHT_SHADOWS" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_PARTICLES", page_id, to_translation( "3D particles" ),
+             to_translation( "If true, fires smoke and spark and wounds spray blood in the 3D view." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_PARTICLES" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_LIMB_ANIMATION", page_id, to_translation( "3D limb animation" ),
+             to_translation( "If true, people and animals swing their legs and arms while they walk and fight." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_LIMB_ANIMATION" ).setPrerequisite( "VOXEL_VIEW" );
+
         std::vector<id_and_option> voxelsets = { { "builtin", to_translation( "Built-in procedural models" ) } };
         for( const std::pair<std::string, std::string> &vs : list_voxelsets() ) {
             voxelsets.emplace_back( vs.first, no_translation( vs.second ) );

@@ -4142,6 +4142,13 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &w )
             voxel_view::overlays state;
             tilecontext->export_voxel_overlays( state );
             voxel_view::set_overlays( state );
+            {
+                point raw;
+                GetMouseState( &raw.x, &raw.y );
+                const SDL_Point buf = window_to_display_buffer_coords( SDL_Point{ raw.x, raw.y } );
+                voxel_view::set_hover( point( buf.x - win->pos.x * fontwidth, buf.y - win->pos.y * fontheight ),
+                                       point( vw, vh ) );
+            }
             if( voxel_view::render( g->ter_view_p, vw, vh, voxel_pixels ) ) {
                 if( !voxel_texture || voxel_texture_size != point( vw, vh ) ) {
                     voxel_texture = CreateTexture( renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING,
@@ -6288,6 +6295,9 @@ static void CheckMessages()
                             case SDLK_HOME:
                                 voxel_view::reset_camera();
                                 break;
+                            case SDLK_C:
+                                voxel_view::cycle_camera_mode();
+                                break;
                             default:
                                 camera_key = false;
                                 break;
@@ -6470,6 +6480,24 @@ static void CheckMessages()
                 }
 #endif
                 case CATA_MOUSEMOTION:
+                    if( !voxel_dragging && g && g->w_terrain && voxel_view::active() &&
+                        !cataimgui::client::want_capture_mouse() ) {
+                        const cata_cursesport::WINDOW *tw = g->w_terrain.get<cata_cursesport::WINDOW>();
+                        if( tw ) {
+                            point raw;
+                            GetMouseState( &raw.x, &raw.y );
+                            const SDL_Point buf = window_to_display_buffer_coords( SDL_Point{ raw.x, raw.y } );
+                            const point size( TERRAIN_WINDOW_TERM_WIDTH * font->width,
+                                              TERRAIN_WINDOW_TERM_HEIGHT * font->height );
+                            const point rel( buf.x - tw->pos.x * fontwidth, buf.y - tw->pos.y * fontheight );
+                            if( rel.x >= 0 && rel.y >= 0 && rel.x < size.x && rel.y < size.y &&
+                                voxel_view::hover_changed( rel, size ) ) {
+                                g->invalidate_main_ui_adaptor();
+                                ui_manager::redraw_invalidated();
+                                refresh_display();
+                            }
+                        }
+                    }
                     if( voxel_dragging ) {
                         voxel_view::orbit( ev.motion.xrel, ev.motion.yrel );
                         if( g ) {

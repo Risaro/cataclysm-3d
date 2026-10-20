@@ -29,11 +29,14 @@ Controls: hold the middle mouse button and drag to rotate the camera, or use Alt
 keys (Alt+Home resets it). The zoom keys move the camera closer. Movement keys follow the camera.
 Walls and trees between the camera and your character are cut away automatically.
 
-Graphics: sun shadows, colored light from fires, flashlights and vehicle lights, animated water and
-fire, upper floors of buildings while you are outdoors, smooth movement, hit flashes and explosion
-shake. Options live in Settings, Graphics, Tileset options: view style, voxel tileset, shadows and
-their quality, antialiasing, draw distance, camera angle, cutaway, upper floors and ambient
-animation.
+Graphics: sun shadows, colored light from fires, flashlights and vehicle lights that walls block,
+ambient occlusion, animated water and fire with smoke and sparks, glowing windows at night, weather
+skies and fog, upper floors of buildings while you are outdoors. Creatures walk with swinging limbs,
+lunge when they attack, spray blood when hit and sink down when they die; doors swing open.
+Camera modes: orbit, over the shoulder and first person (Alt+C). The tile under the mouse is
+highlighted and creatures can be clicked directly. Options live in Settings, Graphics, Tileset options: view style, voxel tileset, shadows and
+their quality, antialiasing, ambient occlusion, light shadows, particles, limb animation, draw
+distance, camera mode and angle, cutaway, upper floors and ambient animation.
 
 ## Building
 

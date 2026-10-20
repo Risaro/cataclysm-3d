@@ -129,6 +129,8 @@
     { "builtin": "rain", "file": "builtin/rain.vox", "emissive": true },
     { "builtin": "snow", "file": "builtin/snow.vox", "emissive": true },
     { "builtin": "bolt", "file": "builtin/bolt.vox", "emissive": true },
-    { "builtin": "marker", "file": "builtin/marker.vox", "emissive": true }
+    { "builtin": "marker", "file": "builtin/marker.vox", "emissive": true },
+    { "builtin": "particle", "file": "builtin/particle.vox" },
+    { "builtin": "spark", "file": "builtin/spark.vox", "emissive": true }
   ]
 }

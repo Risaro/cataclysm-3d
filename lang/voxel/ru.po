@@ -112,3 +112,55 @@ msgid ""
 msgstr ""
 "Наклон камеры по умолчанию в градусах.  90 — строго сверху.  Поворачивайте "
 "камеру Alt и стрелками, сбрасывайте Alt+Home."
+
+msgid "3D camera mode"
+msgstr "Режим камеры в 3D"
+
+msgid ""
+"Orbit looks at the map from above, over the shoulder follows your character "
+"closely, first person looks through their eyes.  Switch it in game with "
+"Alt+C."
+msgstr ""
+"«Обзор» показывает карту сверху, «Из-за плеча» держится рядом с персонажем, "
+"«От первого лица» смотрит его глазами.  Переключается в игре клавишами "
+"Alt+C."
+
+msgid "Orbit"
+msgstr "Обзор"
+
+msgid "Over the shoulder"
+msgstr "Из-за плеча"
+
+msgid "First person"
+msgstr "От первого лица"
+
+msgid "3D ambient occlusion"
+msgstr "Затенение углов в 3D (SSAO)"
+
+msgid ""
+"If true, corners and contact points are darkened softly in the 3D view."
+msgstr "Если включено, углы и места касания мягко затемняются в 3D-виде."
+
+msgid "3D light shadows"
+msgstr "Тени от источников света в 3D"
+
+msgid ""
+"If true, walls block the light of fires, lamps and flashlights in the 3D view."
+msgstr ""
+"Если включено, стены задерживают свет костров, ламп и фонариков в 3D-виде."
+
+msgid "3D particles"
+msgstr "Частицы в 3D"
+
+msgid ""
+"If true, fires smoke and spark and wounds spray blood in the 3D view."
+msgstr "Если включено, огонь дымит и искрит, а раны брызжут кровью в 3D-виде."
+
+msgid "3D limb animation"
+msgstr "Анимация конечностей в 3D"
+
+msgid ""
+"If true, people and animals swing their legs and arms while they walk and "
+"fight."
+msgstr ""
+"Если включено, люди и животные двигают руками и ногами при ходьбе и в бою."

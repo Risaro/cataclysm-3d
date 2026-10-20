@@ -67,6 +67,7 @@
     X( glTexParameteri ) \
     X( glUniform1f ) \
     X( glUniform1i ) \
+    X( glUniform2f ) \
     X( glUniform3f ) \
     X( glUniform3fv ) \
     X( glUniform4fv ) \

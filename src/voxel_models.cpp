@@ -269,7 +269,10 @@ voxel_grid make_door( const vm_key &k, bool open, uint32_t seed )
         }
     }
     const bool glass = k.material == vm_material::glass;
-    for( int y = 0; y < 13; ++y ) {
+    if( k.variant == 1 ) {
+        g = voxel_grid( 8, lh, 8 );
+    }
+    for( int y = 0; y < 13 && k.variant != 2; ++y ) {
         for( int a = 1; a < 7; ++a ) {
             for( int t = 3; t < 5; ++t ) {
                 const bool panel = ( a >= 2 && a < 6 ) && ( ( y >= 2 && y < 6 ) || ( y >= 7 && y < 11 ) );
@@ -283,7 +286,7 @@ voxel_grid make_door( const vm_key &k, bool open, uint32_t seed )
             }
         }
     }
-    if( !open ) {
+    if( !open && k.variant != 2 ) {
         g.set( 6, 6, 2, rgb( 210, 180, 60 ) );
         g.set( 6, 6, 5, rgb( 210, 180, 60 ) );
     }
@@ -1540,6 +1543,56 @@ voxel_grid make_marker( const vm_key &k )
     return g;
 }
 
+voxel_grid make_small_cube( const vm_key &k )
+{
+    voxel_grid g( 8, 2, 8 );
+    g.box( 3, 0, 3, 5, 2, 5, k.color );
+    return g;
+}
+
+int quad_leg_top( uint8_t param )
+{
+    static const std::array<int, 7> tops = { { 3, 3, 5, 3, 5, 1, 2 } };
+    return tops[std::min<int>( param, 6 )];
+}
+
+voxel_grid limb_part( const voxel_grid &whole, vm_kind kind, uint8_t param, uint8_t part )
+{
+    voxel_grid out( whole.sx, whole.sy, whole.sz, whole.ox, whole.oz );
+    const bool quad = kind == vm_kind::quadruped;
+    for( int y = 0; y < whole.sy; ++y ) {
+        for( int z = 0; z < whole.sz; ++z ) {
+            for( int x = 0; x < whole.sx; ++x ) {
+                if( !whole.solid( x, y, z ) ) {
+                    continue;
+                }
+                uint8_t which = vmp_body;
+                if( quad ) {
+                    if( y < quad_leg_top( param ) ) {
+                        const bool front = z < whole.sz / 2;
+                        const bool left = x < whole.sx / 2;
+                        which = front == left ? vmp_leg_a : vmp_leg_b;
+                    }
+                } else {
+                    if( y < 5 && x >= 2 && x < 4 ) {
+                        which = vmp_leg_a;
+                    } else if( y < 5 && x >= 4 && x < 6 ) {
+                        which = vmp_leg_b;
+                    } else if( y >= 5 && y < 10 && x < 2 ) {
+                        which = vmp_arm_a;
+                    } else if( y >= 5 && y < 10 && x >= 6 ) {
+                        which = vmp_arm_b;
+                    }
+                }
+                if( which == part ) {
+                    out.set( x, y, z, whole.color( x, y, z ), whole.glass( x, y, z ) );
+                }
+            }
+        }
+    }
+    return out;
+}
+
 voxel_grid make_particle( const vm_key &k )
 {
     voxel_grid g( 8, 6, 8 );
@@ -1575,7 +1628,7 @@ const char *vm_kind_name( vm_kind kind )
             "cloud", "cursor", "machine", "pole", "stack", "mound", "mat", "panel", "pillar", "stump",
             "ramp", "grave", "anvil", "hedge", "trap", "vehicle", "item_gun", "item_blade", "item_tool",
             "item_clothing", "item_food", "item_bottle", "item_book", "item_ammo", "item_corpse", "held",
-            "rain", "snow", "bolt", "marker"
+            "rain", "snow", "bolt", "marker", "particle", "spark"
         }
     };
     return names[static_cast<int>( kind )];
@@ -1594,10 +1647,45 @@ const char *vm_material_name( vm_material material )
 bool vm_is_emissive( vm_kind kind )
 {
     return kind == vm_kind::fire || kind == vm_kind::cursor || kind == vm_kind::rain ||
-           kind == vm_kind::snow || kind == vm_kind::bolt || kind == vm_kind::marker;
+           kind == vm_kind::snow || kind == vm_kind::bolt || kind == vm_kind::marker ||
+           kind == vm_kind::spark;
 }
 
+bool vm_has_limbs( vm_kind kind )
+{
+    return kind == vm_kind::humanoid || kind == vm_kind::zombie || kind == vm_kind::quadruped;
+}
+
+float vm_limb_pivot_y( vm_kind kind, uint8_t param, uint8_t part )
+{
+    if( kind == vm_kind::quadruped ) {
+        return static_cast<float>( quad_leg_top( param ) );
+    }
+    return part == vmp_arm_a || part == vmp_arm_b ? 8.5f : 5.0f;
+}
+
+float vm_limb_pivot_z( vm_kind kind, uint8_t part )
+{
+    if( kind == vm_kind::quadruped ) {
+        return 5.0f;
+    }
+    return part == vmp_arm_a || part == vmp_arm_b ? 4.0f : 4.0f;
+}
+
+voxel_grid make_whole_model( const vm_key &raw );
+
 voxel_grid make_voxel_model( const vm_key &raw )
+{
+    const uint8_t part = static_cast<uint8_t>( raw.material );
+    if( vm_has_limbs( raw.kind ) && part != vmp_whole ) {
+        vm_key whole = raw;
+        whole.material = vm_material::generic;
+        return limb_part( make_whole_model( whole ), raw.kind, raw.param, part );
+    }
+    return make_whole_model( raw );
+}
+
+voxel_grid make_whole_model( const vm_key &raw )
 {
     vm_key k = raw;
     k.color = dequant( raw.color );
@@ -1758,6 +1846,9 @@ voxel_grid make_voxel_model( const vm_key &raw )
         case vm_kind::bolt:
         case vm_kind::marker:
             return make_marker( k );
+        case vm_kind::particle:
+        case vm_kind::spark:
+            return make_small_cube( k );
     }
     return make_furniture( k, seed );
 }

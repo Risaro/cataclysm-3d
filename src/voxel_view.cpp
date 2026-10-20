@@ -21,6 +21,7 @@
 #include "calendar.h"
 #include "coordinates.h"
 #include "creature.h"
+#include "creature_tracker.h"
 #include "debug.h"
 #include "field.h"
 #include "field_type.h"
@@ -225,6 +226,10 @@ struct instance {
     float emissive;
     float desat;
     float pad;
+    float pivot_y;
+    float pivot_z;
+    float swing;
+    float unused;
 };
 
 struct gpu_mesh {
@@ -286,6 +291,11 @@ struct camera_state {
     float yaw = 0.0f;
     float pitch = 0.95f;
     bool initialized = false;
+    int mode = 0;
+    std::optional<tripoint_bub_ms> hover;
+    point hover_pixel;
+    point hover_size;
+    bool hover_set = false;
     mat4 view_proj;
     int width = 0;
     int height = 0;
@@ -1341,6 +1351,31 @@ enum sprite_mode : int {
     sprite_cube = 2
 };
 
+struct scene_key {
+    tripoint_bub_ms center;
+    tripoint_bub_ms you;
+    tripoint_abs_sm sub;
+    int turn = 0;
+    int moves = 0;
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    int mode = 0;
+    int radius = 0;
+    float daylight = 0.0f;
+    int generation = 0;
+    bool sprites = false;
+    bool cutaway = false;
+    bool upper = false;
+    bool light_shadows = false;
+
+    bool operator==( const scene_key &o ) const {
+        return center == o.center && you == o.you && sub == o.sub && turn == o.turn && moves == o.moves &&
+               yaw == o.yaw && pitch == o.pitch && mode == o.mode && radius == o.radius &&
+               daylight == o.daylight && generation == o.generation && sprites == o.sprites &&
+               cutaway == o.cutaway && upper == o.upper && light_shadows == o.light_shadows;
+    }
+};
+
 template<typename Next>
 const voxelset_entry *find_chain( const voxelset *vs, std::string id, Next next )
 {
@@ -1439,7 +1474,9 @@ class voxel_renderer
         bool init_sprites();
         void reset_models();
         void sync_voxelset();
-        vec3 animated( const void *id, const tripoint_bub_ms &p );
+        vec3 animated( const void *id, const tripoint_bub_ms &p, float *phase = nullptr );
+        float last_lunge = 0.0f;
+        float last_arm_swing = 0.0f;
         void add_style( const tile_style &st, const tripoint_bub_ms &p, float light, float desat,
                         bool furniture );
         const tile_style &terrain_style( const ter_id &t );
@@ -1518,9 +1555,45 @@ class voxel_renderer
         std::unordered_map<const void *, ghost> visible_monsters;
         std::vector<ghost> dying;
         std::unordered_map<const void *, std::pair<vec3, uint64_t>> lunges;
+        std::array<float, 3> next_anim = { 0.0f, 0.0f, 0.0f };
+        bool cache_valid = false;
+        scene_key cached_key;
+        instance_lists cached_main;
+        instance_lists cached_shadow;
+        std::map<std::pair<int, int>, std::vector<sprite_instance>> cached_sprites;
+        std::vector<std::array<float, 4>> cached_light_pos;
+        std::vector<std::array<float, 3>> cached_light_col;
+        bool cached_ambient = false;
+        std::vector<tripoint_bub_ms> fire_tiles;
+        std::vector<tripoint_bub_ms> cached_fires;
+        std::vector<uint8_t> occ_data;
+        GLuint occ_tex = 0;
+        int occ_floor_z = 0;
+        void upload_occupancy();
+        struct burst {
+            vec3 pos;
+            uint64_t start = 0;
+            uint32_t seed = 0;
+        };
+        std::vector<burst> bursts;
+        struct door_state {
+            bool open = false;
+            uint64_t start = 0;
+        };
+        std::map<tripoint_abs_ms, door_state> doors;
+        bool door_animation( const tile_style &st, const tripoint_bub_ms &p, const vm_key &k, float light,
+                             float desat );
+        void add_creature_parts( const vm_key &key, const vec3 &pos, float yaw, float light, float scale,
+                                 const voxel_rgb &tint, float phase, float attack );
+        void add_particles();
+        GLuint resolve_depth = 0;
+        GLuint post_fbo = 0;
+        GLuint post_color = 0;
+        GLuint ssao_program = 0;
+        GLuint empty_vao = 0;
         bool hurt_now( const Creature &c ) const;
         vec3 lunge_offset( const void *id );
-        voxel_rgb flash_tint( const Creature &c );
+        voxel_rgb flash_tint( const Creature &c, const vec3 &pos );
         void add_light( const tripoint_bub_ms &p, float lift, float radius, float r, float g, float b );
         void upload_lights( GLuint program );
         void apply_quality();
@@ -1547,6 +1620,7 @@ layout( location = 2 ) in vec4 a_color;
 layout( location = 3 ) in vec4 i_pos;
 layout( location = 4 ) in vec4 i_tint;
 layout( location = 5 ) in vec4 i_extra;
+layout( location = 6 ) in vec4 i_anim;
 uniform mat4 u_vp;
 uniform mat4 u_light_vp;
 uniform float u_time;
@@ -1562,14 +1636,23 @@ void main()
 {
     float c = cos( i_pos.w );
     float s = sin( i_pos.w );
-    vec3 p = ( a_pos - vec3( 0.5, 0.0, 0.5 ) ) * i_extra.x;
+    vec3 lp = a_pos;
+    vec3 ln = a_normal;
+    if( i_anim.z != 0.0 ) {
+        float ca = cos( i_anim.z );
+        float sa = sin( i_anim.z );
+        vec2 q = lp.yz - i_anim.xy;
+        lp.yz = vec2( ca * q.x - sa * q.y, sa * q.x + ca * q.y ) + i_anim.xy;
+        ln.yz = vec2( ca * ln.y - sa * ln.z, sa * ln.y + ca * ln.z );
+    }
+    vec3 p = ( lp - vec3( 0.5, 0.0, 0.5 ) ) * i_extra.x;
     p = vec3( c * p.x - s * p.z, p.y, s * p.x + c * p.z ) + vec3( 0.5, 0.0, 0.5 );
     vec3 world = p + i_pos.xyz;
     v_wave = i_extra.w;
     if( i_extra.w > 0.5 ) {
         world.y += sin( u_time * 1.6 + world.x * 1.1 + world.z * 0.8 ) * 0.035;
     }
-    v_normal = vec3( c * a_normal.x - s * a_normal.z, a_normal.y, s * a_normal.x + c * a_normal.z );
+    v_normal = vec3( c * ln.x - s * ln.z, ln.y, s * ln.x + c * ln.z );
     v_color = a_color.rgb * i_tint.rgb * a_color.a;
     v_light = i_tint.a;
     v_emissive = i_extra.y;
@@ -1595,6 +1678,31 @@ uniform vec4 u_lights[24];
 uniform vec3 u_light_colors[24];
 uniform int u_light_count;
 uniform float u_time;
+uniform sampler2D u_occ;
+uniform int u_occ_enabled;
+uniform float u_occ_floor;
+uniform float u_occ_size;
+float light_visible( vec3 p, vec3 l )
+{
+    if( u_occ_enabled == 0 ) {
+        return 1.0;
+    }
+    vec2 own = floor( p.xz );
+    vec2 target = floor( l.xz );
+    vec3 d = l - p;
+    for( int i = 1; i < 12; ++i ) {
+        vec3 q = p + d * ( float( i ) / 12.0 );
+        vec2 cell = floor( q.xz );
+        if( cell == own || cell == target ) {
+            continue;
+        }
+        float h = texture( u_occ, ( cell + 0.5 ) / u_occ_size ).r * 2.0;
+        if( q.y < u_occ_floor + h && q.y > u_occ_floor - 0.1 ) {
+            return 0.0;
+        }
+    }
+    return 1.0;
+}
 vec3 point_lights( vec3 n, vec3 p )
 {
     vec3 sum = vec3( 0.0 );
@@ -1602,7 +1710,10 @@ vec3 point_lights( vec3 n, vec3 p )
         vec3 d = u_lights[i].xyz - p;
         float dist = length( d );
         float att = clamp( 1.0 - dist / u_lights[i].w, 0.0, 1.0 );
-        att *= att;
+        if( att <= 0.0 ) {
+            continue;
+        }
+        att *= att * light_visible( p + n * 0.06, u_lights[i].xyz );
         float facing = 0.45 + 0.55 * max( dot( n, d / max( dist, 0.001 ) ), 0.0 );
         sum += u_light_colors[i] * att * facing;
     }
@@ -1661,12 +1772,23 @@ const char *shadow_vs = R"(#version 330 core
 layout( location = 0 ) in vec3 a_pos;
 layout( location = 3 ) in vec4 i_pos;
 layout( location = 5 ) in vec4 i_extra;
+layout( location = 6 ) in vec4 i_anim;
 uniform mat4 u_light_vp;
 void main()
 {
     float c = cos( i_pos.w );
     float s = sin( i_pos.w );
-    vec3 p = ( a_pos - vec3( 0.5, 0.0, 0.5 ) ) * i_extra.x;
+    vec3 a_normal = vec3( 0.0, 1.0, 0.0 );
+    vec3 lp = a_pos;
+    vec3 ln = a_normal;
+    if( i_anim.z != 0.0 ) {
+        float ca = cos( i_anim.z );
+        float sa = sin( i_anim.z );
+        vec2 q = lp.yz - i_anim.xy;
+        lp.yz = vec2( ca * q.x - sa * q.y, sa * q.x + ca * q.y ) + i_anim.xy;
+        ln.yz = vec2( ca * ln.y - sa * ln.z, sa * ln.y + ca * ln.z );
+    }
+    vec3 p = ( lp - vec3( 0.5, 0.0, 0.5 ) ) * i_extra.x;
     p = vec3( c * p.x - s * p.z, p.y, s * p.x + c * p.z ) + vec3( 0.5, 0.0, 0.5 );
     gl_Position = u_light_vp * vec4( p + i_pos.xyz, 1.0 );
 }
@@ -1675,6 +1797,55 @@ void main()
 const char *shadow_fs = R"(#version 330 core
 void main()
 {
+}
+)";
+
+const char *ssao_vs = R"(#version 330 core
+out vec2 v_uv;
+void main()
+{
+    vec2 p = vec2( float( ( gl_VertexID << 1 ) & 2 ), float( gl_VertexID & 2 ) );
+    v_uv = p;
+    gl_Position = vec4( p * 2.0 - 1.0, 0.0, 1.0 );
+}
+)";
+
+const char *ssao_fs = R"(#version 330 core
+in vec2 v_uv;
+uniform sampler2D u_color;
+uniform sampler2D u_depth;
+uniform vec2 u_texel;
+uniform float u_near;
+uniform float u_far;
+out vec4 frag;
+float linear_depth( vec2 uv )
+{
+    float z = texture( u_depth, uv ).r * 2.0 - 1.0;
+    return 2.0 * u_near * u_far / ( u_far + u_near - z * ( u_far - u_near ) );
+}
+void main()
+{
+    vec4 base = texture( u_color, v_uv );
+    float d = texture( u_depth, v_uv ).r;
+    if( d >= 0.9999 ) {
+        frag = base;
+        return;
+    }
+    float center = linear_depth( v_uv );
+    float radius = clamp( 70.0 / center, 2.0, 22.0 );
+    float occlusion = 0.0;
+    const int samples = 12;
+    for( int i = 0; i < samples; ++i ) {
+        float a = float( i ) * 2.399963;
+        float r = radius * sqrt( ( float( i ) + 0.5 ) / float( samples ) );
+        vec2 uv = v_uv + vec2( cos( a ), sin( a ) ) * r * u_texel;
+        float diff = center - linear_depth( uv );
+        if( diff > 0.03 && diff < 1.6 ) {
+            occlusion += 1.0 - diff / 1.6;
+        }
+    }
+    float ao = 1.0 - 0.55 * occlusion / float( samples );
+    frag = vec4( base.rgb * ao, base.a );
 }
 )";
 
@@ -1761,6 +1932,31 @@ uniform vec4 u_lights[24];
 uniform vec3 u_light_colors[24];
 uniform int u_light_count;
 uniform float u_time;
+uniform sampler2D u_occ;
+uniform int u_occ_enabled;
+uniform float u_occ_floor;
+uniform float u_occ_size;
+float light_visible( vec3 p, vec3 l )
+{
+    if( u_occ_enabled == 0 ) {
+        return 1.0;
+    }
+    vec2 own = floor( p.xz );
+    vec2 target = floor( l.xz );
+    vec3 d = l - p;
+    for( int i = 1; i < 12; ++i ) {
+        vec3 q = p + d * ( float( i ) / 12.0 );
+        vec2 cell = floor( q.xz );
+        if( cell == own || cell == target ) {
+            continue;
+        }
+        float h = texture( u_occ, ( cell + 0.5 ) / u_occ_size ).r * 2.0;
+        if( q.y < u_occ_floor + h && q.y > u_occ_floor - 0.1 ) {
+            return 0.0;
+        }
+    }
+    return 1.0;
+}
 vec3 point_lights( vec3 n, vec3 p )
 {
     vec3 sum = vec3( 0.0 );
@@ -1768,7 +1964,10 @@ vec3 point_lights( vec3 n, vec3 p )
         vec3 d = u_lights[i].xyz - p;
         float dist = length( d );
         float att = clamp( 1.0 - dist / u_lights[i].w, 0.0, 1.0 );
-        att *= att;
+        if( att <= 0.0 ) {
+            continue;
+        }
+        att *= att * light_visible( p + n * 0.06, u_lights[i].xyz );
         float facing = 0.45 + 0.55 * max( dot( n, d / max( dist, 0.001 ) ), 0.0 );
         sum += u_light_colors[i] * att * facing;
     }
@@ -1937,7 +2136,9 @@ bool voxel_renderer::init_sprites()
     voxel_gl_api &gl = voxel_gl();
     sprite_program = compile( sprite_vs, sprite_fs );
     sprite_shadow_program = compile( sprite_vs, sprite_shadow_fs );
-    if( !sprite_program || !sprite_shadow_program ) {
+    ssao_program = compile( ssao_vs, ssao_fs );
+    gl.glGenVertexArrays( 1, &empty_vao );
+    if( !sprite_program || !sprite_shadow_program || !ssao_program ) {
         return false;
     }
     gl.glGenBuffers( 1, &sprite_vbo );
@@ -2262,7 +2463,10 @@ bool voxel_renderer::ensure_targets( int w, int h )
         gl.glDeleteRenderbuffers( 1, &msaa_color );
         gl.glDeleteRenderbuffers( 1, &msaa_depth );
         gl.glDeleteFramebuffers( 1, &resolve_fbo );
-        gl.glDeleteRenderbuffers( 1, &resolve_color );
+        gl.glDeleteTextures( 1, &resolve_color );
+        gl.glDeleteTextures( 1, &resolve_depth );
+        gl.glDeleteFramebuffers( 1, &post_fbo );
+        gl.glDeleteRenderbuffers( 1, &post_color );
     }
     gl.glGenFramebuffers( 1, &msaa_fbo );
     gl.glGenRenderbuffers( 1, &msaa_color );
@@ -2276,18 +2480,34 @@ bool voxel_renderer::ensure_targets( int w, int h )
     gl.glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, msaa_depth );
     const bool msaa_ok = gl.glCheckFramebufferStatus( GL_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE;
 
+    const auto make_texture = [&gl, w, h]( GLuint & tex, GLint internal, GLenum format, GLenum type ) {
+        gl.glGenTextures( 1, &tex );
+        gl.glBindTexture( GL_TEXTURE_2D, tex );
+        gl.glTexImage2D( GL_TEXTURE_2D, 0, internal, w, h, 0, format, type, nullptr );
+        gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+        gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+        gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+        gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+    };
     gl.glGenFramebuffers( 1, &resolve_fbo );
-    gl.glGenRenderbuffers( 1, &resolve_color );
+    make_texture( resolve_color, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE );
+    make_texture( resolve_depth, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_FLOAT );
     gl.glBindFramebuffer( GL_FRAMEBUFFER, resolve_fbo );
-    gl.glBindRenderbuffer( GL_RENDERBUFFER, resolve_color );
-    gl.glRenderbufferStorage( GL_RENDERBUFFER, GL_RGBA8, w, h );
-    gl.glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER,
-                                  resolve_color );
+    gl.glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, resolve_color, 0 );
+    gl.glFramebufferTexture2D( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, resolve_depth, 0 );
     const bool resolve_ok = gl.glCheckFramebufferStatus( GL_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE;
+
+    gl.glGenFramebuffers( 1, &post_fbo );
+    gl.glGenRenderbuffers( 1, &post_color );
+    gl.glBindFramebuffer( GL_FRAMEBUFFER, post_fbo );
+    gl.glBindRenderbuffer( GL_RENDERBUFFER, post_color );
+    gl.glRenderbufferStorage( GL_RENDERBUFFER, GL_RGBA8, w, h );
+    gl.glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, post_color );
+    const bool post_ok = gl.glCheckFramebufferStatus( GL_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE;
     gl.glBindFramebuffer( GL_FRAMEBUFFER, 0 );
     target_w = w;
     target_h = h;
-    return msaa_ok && resolve_ok;
+    return msaa_ok && resolve_ok && post_ok;
 }
 
 int voxel_renderer::upload_model( const voxel_mesh &mesh, bool emissive )
@@ -2314,7 +2534,7 @@ int voxel_renderer::upload_model( const voxel_mesh &mesh, bool emissive )
         gl.glEnableVertexAttribArray( 2 );
         gl.glVertexAttribPointer( 2, 4, GL_FLOAT, GL_FALSE, stride,
                                   reinterpret_cast<void *>( 6 * sizeof( float ) ) );
-        for( GLuint loc = 3; loc <= 5; ++loc ) {
+        for( GLuint loc = 3; loc <= 6; ++loc ) {
             gl.glEnableVertexAttribArray( loc );
             gl.glVertexAttribDivisor( loc, 1 );
         }
@@ -2347,7 +2567,7 @@ void voxel_renderer::add( instance_lists &lists, const vm_key &key, const tripoi
             lift, yaw, light, desat, scale, tint );
 }
 
-vec3 voxel_renderer::animated( const void *id, const tripoint_bub_ms &p )
+vec3 voxel_renderer::animated( const void *id, const tripoint_bub_ms &p, float *phase )
 {
     constexpr float duration = 140.0f;
     map &here = get_map();
@@ -2372,6 +2592,9 @@ vec3 voxel_renderer::animated( const void *id, const tripoint_bub_ms &p )
         animating = true;
     }
     const float bob = m.from != m.to ? std::sin( t * pi ) * 0.07f / level_height : 0.0f;
+    if( phase ) {
+        *phase = m.from != m.to && t < 1.0f ? t : -1.0f;
+    }
     t = t * t * ( 3.0f - 2.0f * t );
     const tripoint_rel_ms d = m.to - m.from;
     return vec3{ static_cast<float>( p.x() ) - d.x() * ( 1.0f - t ), static_cast<float>( p.z() ) + bob,
@@ -2477,6 +2700,10 @@ void voxel_renderer::add_at( instance_lists &lists, const vm_key &key, const vec
     inst.emissive = models[m].emissive ? 1.0f : 0.0f;
     inst.desat = desat;
     inst.pad = key.kind == vm_kind::water ? 1.0f : 0.0f;
+    inst.pivot_y = next_anim[0];
+    inst.pivot_z = next_anim[1];
+    inst.swing = next_anim[2];
+    next_anim = { 0.0f, 0.0f, 0.0f };
     if( key.kind == vm_kind::water || key.kind == vm_kind::fire ) {
         ambient = true;
     }
@@ -2581,6 +2808,11 @@ void voxel_renderer::add_style( const tile_style &st, const tripoint_bub_ms &p, 
     if( st.kind == vm_kind::fire ) {
         lift = voxel_size;
     }
+    if( !sprite_style && !drawing_shadow && desat == 0.0f && st.custom == nullptr &&
+        ( st.kind == vm_kind::door || st.kind == vm_kind::door_open ) && !cut_here( p ) &&
+        door_animation( st, p, k, light, desat ) ) {
+        return;
+    }
     const voxelset_entry *custom = st.custom;
     if( !drawing_shadow && cut_here( p ) ) {
         if( st.kind == vm_kind::wall || st.kind == vm_kind::window || st.kind == vm_kind::door ||
@@ -2665,7 +2897,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     avatar &you = get_avatar();
     const visibility_variables &cache = here.get_visibility_variables_cache();
     sync_voxelset();
-    cutaway = get_option<bool>( "VOXEL_CUTAWAY" );
+    cutaway = get_option<bool>( "VOXEL_CUTAWAY" ) && cam.mode != 2;
     night = daylight < 0.25f;
     cut_center = get_avatar().pos_bub( get_map() );
     sprite_style = get_option<std::string>( "VOXEL_STYLE" ) == "sprites";
@@ -2701,306 +2933,376 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     const int columns_w = x1 - x0 + 1;
     std::vector<bool> known_column( static_cast<size_t>( columns_w ) * ( y1 - y0 + 1 ), false );
 
-    for( int y = y0; y <= y1; ++y ) {
-        for( int x = x0; x <= x1; ++x ) {
-            for( int z = center.z(); z >= min_z; --z ) {
-                const tripoint_bub_ms p( x, y, z );
-                const level_cache &lc = here.access_cache( z );
-                const lit_level ll = lc.visibility_cache[x][y];
-                const bool seen = here.get_visibility( ll, cache ) == visibility_type::CLEAR;
-                const ter_id ter = here.ter( p );
-                const tile_style &ts = terrain_style( ter );
-                if( z == center.z() && ( seen || you.has_memory_at( here.get_abs( p ) ) ) ) {
-                    known_column[static_cast<size_t>( y - y0 ) * columns_w + ( x - x0 )] = true;
-                }
-                if( seen ) {
-                    const float light = light_value( here.ambient_light_at( p ), ll );
-                    if( !sprite_style || !sprite_terrain( p, ter.id().str(), ts, light, 0.0f ) ) {
-                        add_style( ts, p, light, 0.0f, false );
+    const tripoint_bub_ms you_pos = you.pos_bub( here );
+    const scene_key key{ center, you_pos, here.get_abs_sub(), to_turns<int>( calendar::turn - calendar::turn_zero ),
+                         you.get_moves(), cam.yaw, cam.pitch, cam.mode, radius, daylight, vset_generation, sprite_style,
+                         cutaway, get_option<bool>( "VOXEL_UPPER_FLOORS" ), get_option<bool>( "VOXEL_LIGHT_SHADOWS" ) };
+    if( cache_valid && key == cached_key ) {
+        main_lists = cached_main;
+        shadow_lists = cached_shadow;
+        sprite_batches = cached_sprites;
+        light_pos = cached_light_pos;
+        light_col = cached_light_col;
+        ambient = cached_ambient;
+        fire_tiles = cached_fires;
+    } else {
+        fire_tiles.clear();
+        occ_data.assign( static_cast<size_t>( MAPSIZE_X ) * MAPSIZE_Y, 0 );
+        for( int y = y0; y <= y1; ++y ) {
+            for( int x = x0; x <= x1; ++x ) {
+                for( int z = center.z(); z >= min_z; --z ) {
+                    const tripoint_bub_ms p( x, y, z );
+                    const level_cache &lc = here.access_cache( z );
+                    const lit_level ll = lc.visibility_cache[x][y];
+                    const bool seen = here.get_visibility( ll, cache ) == visibility_type::CLEAR;
+                    const ter_id ter = here.ter( p );
+                    const tile_style &ts = terrain_style( ter );
+                    if( z == center.z() && ( ts.kind == vm_kind::wall || ts.kind == vm_kind::window ||
+                                             ts.kind == vm_kind::door ) && ts.draw ) {
+                        occ_data[static_cast<size_t>( y ) * MAPSIZE_X + x] = ts.kind == vm_kind::wall &&
+                                ts.param == 1 ? 128 : 255;
                     }
-                    if( here.has_furn( p ) ) {
-                        const furn_id fu = here.furn( p );
-                        const tile_style &fs = furniture_style( fu );
-                        if( !sprite_style || !sprite_furniture( p, fu.id().str(), fs, light, 0.0f ) ) {
-                            add_style( fs, p, light, 0.0f, true );
-                        }
+                    if( z == center.z() && ( seen || you.has_memory_at( here.get_abs( p ) ) ) ) {
+                        known_column[static_cast<size_t>( y - y0 ) * columns_w + ( x - x0 )] = true;
                     }
-                    const optional_vpart_position ovp = here.veh_at( p );
-                    if( ovp ) {
-                        const vehicle &veh = ovp->vehicle();
-                        const float veh_yaw = static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f;
-                        bool vehicle_sprite = false;
-                        const sprite_ref *veh_sprite = nullptr;
-                        if( sprite_style ) {
-                            const vpart_display svd = veh.get_display_of_tile( ovp->mount_pos() );
-                            if( !svd.id.is_null() ) {
-                                const sprite_ref *vs = atlas.fg( svd.get_tileset_id() );
-                                if( vs == nullptr ) {
-                                    vs = find_sprite( "vp_" + svd.id.str(), vpart_looks_like );
-                                }
-                                if( vs ) {
-                                    veh_sprite = vs;
-                                    vehicle_sprite = true;
-                                }
+                    if( seen ) {
+                        const float light = light_value( here.ambient_light_at( p ), ll );
+                        if( !sprite_style || !sprite_terrain( p, ter.id().str(), ts, light, 0.0f ) ) {
+                            add_style( ts, p, light, 0.0f, false );
+                        }
+                        if( here.has_furn( p ) ) {
+                            const furn_id fu = here.furn( p );
+                            const tile_style &fs = furniture_style( fu );
+                            if( !sprite_style || !sprite_furniture( p, fu.id().str(), fs, light, 0.0f ) ) {
+                                add_style( fs, p, light, 0.0f, true );
                             }
                         }
-                        vm_key vk;
-                        vk.kind = vm_kind::vehicle;
-                        vk.color2 = rgb( 70, 60, 55 );
-                        bool have_body_color = false;
-                        bool any = false;
-                        for( const int idx : veh.parts_at_relative( ovp->mount_pos(), true ) ) {
-                            const vehicle_part &vp = veh.part( idx );
-                            if( vp.removed ) {
-                                continue;
+                        const optional_vpart_position ovp = here.veh_at( p );
+                        if( ovp ) {
+                            const vehicle &veh = ovp->vehicle();
+                            const float veh_yaw = static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f;
+                            bool vehicle_sprite = false;
+                            const sprite_ref *veh_sprite = nullptr;
+                            if( sprite_style ) {
+                                const vpart_display svd = veh.get_display_of_tile( ovp->mount_pos() );
+                                if( !svd.id.is_null() ) {
+                                    const sprite_ref *vs = atlas.fg( svd.get_tileset_id() );
+                                    if( vs == nullptr ) {
+                                        vs = find_sprite( "vp_" + svd.id.str(), vpart_looks_like );
+                                    }
+                                    if( vs ) {
+                                        veh_sprite = vs;
+                                        vehicle_sprite = true;
+                                    }
+                                }
                             }
-                            any = true;
-                            const vpart_info &vi = vp.info();
-                            const voxel_rgb pc = soften( to_rgb( vi.color ) );
-                            if( vp.is_broken() ) {
-                                vk.variant |= vmx_broken;
-                            }
-                            if( vi.has_flag( VPFLAG_WHEEL ) ) {
-                                vk.param |= vmv_wheel;
-                            }
-                            if( vi.has_flag( VPFLAG_WINDOW ) ) {
-                                vk.param |= vmv_window;
-                            }
-                            if( vi.has_flag( VPFLAG_OPENABLE ) && !vi.has_flag( VPFLAG_WINDOW ) ) {
-                                vk.variant |= vp.open ? vmx_door_open : vmx_door;
-                                if( !have_body_color ) {
+                            vm_key vk;
+                            vk.kind = vm_kind::vehicle;
+                            vk.color2 = rgb( 70, 60, 55 );
+                            bool have_body_color = false;
+                            bool any = false;
+                            for( const int idx : veh.parts_at_relative( ovp->mount_pos(), true ) ) {
+                                const vehicle_part &vp = veh.part( idx );
+                                if( vp.removed ) {
+                                    continue;
+                                }
+                                any = true;
+                                const vpart_info &vi = vp.info();
+                                const voxel_rgb pc = soften( to_rgb( vi.color ) );
+                                if( vp.is_broken() ) {
+                                    vk.variant |= vmx_broken;
+                                }
+                                if( vi.has_flag( VPFLAG_WHEEL ) ) {
+                                    vk.param |= vmv_wheel;
+                                }
+                                if( vi.has_flag( VPFLAG_WINDOW ) ) {
+                                    vk.param |= vmv_window;
+                                }
+                                if( vi.has_flag( VPFLAG_OPENABLE ) && !vi.has_flag( VPFLAG_WINDOW ) ) {
+                                    vk.variant |= vp.open ? vmx_door_open : vmx_door;
+                                    if( !have_body_color ) {
+                                        vk.color = pc;
+                                        have_body_color = true;
+                                    }
+                                } else if( vi.has_flag( VPFLAG_OPAQUE ) && vi.has_flag( VPFLAG_OBSTACLE ) ) {
+                                    vk.param |= vmv_board;
                                     vk.color = pc;
                                     have_body_color = true;
                                 }
-                            } else if( vi.has_flag( VPFLAG_OPAQUE ) && vi.has_flag( VPFLAG_OBSTACLE ) ) {
-                                vk.param |= vmv_board;
-                                vk.color = pc;
-                                have_body_color = true;
-                            }
-                            if( vi.has_flag( "SEAT" ) || vi.has_flag( "BED" ) ) {
-                                vk.param |= vmv_seat;
-                                vk.color2 = voxel_shade( pc, 0.8f );
-                            }
-                            if( vi.has_flag( VPFLAG_ROOF ) ) {
-                                vk.param |= vmv_roof;
-                                if( !have_body_color ) {
+                                if( vi.has_flag( "SEAT" ) || vi.has_flag( "BED" ) ) {
+                                    vk.param |= vmv_seat;
+                                    vk.color2 = voxel_shade( pc, 0.8f );
+                                }
+                                if( vi.has_flag( VPFLAG_ROOF ) ) {
+                                    vk.param |= vmv_roof;
+                                    if( !have_body_color ) {
+                                        vk.color = pc;
+                                    }
+                                }
+                                if( vi.has_flag( VPFLAG_ENGINE ) ) {
+                                    vk.param |= vmv_engine;
+                                }
+                                if( vi.has_flag( VPFLAG_CONE_LIGHT ) || vi.has_flag( VPFLAG_WIDE_CONE_LIGHT ) ||
+                                    vi.has_flag( VPFLAG_HALF_CIRCLE_LIGHT ) ) {
+                                    vk.param |= vmv_light;
+                                    if( vp.enabled && !vp.is_broken() ) {
+                                        add_light( p, 0.7f, 9.0f, 0.95f, 0.9f, 0.75f );
+                                    }
+                                }
+                                if( ( vi.has_flag( VPFLAG_DOME_LIGHT ) || vi.has_flag( VPFLAG_AISLE_LIGHT ) ||
+                                      vi.has_flag( VPFLAG_CIRCLE_LIGHT ) ) && vp.enabled && !vp.is_broken() ) {
+                                    add_light( p, 1.2f, 6.0f, 0.9f, 0.88f, 0.8f );
+                                }
+                                if( vi.has_flag( "TURRET" ) ) {
+                                    vk.param |= vmv_turret;
+                                }
+                                if( vi.has_flag( VPFLAG_CARGO ) && !vi.has_flag( VPFLAG_WHEEL ) ) {
+                                    vk.variant |= vmx_cargo;
+                                }
+                                if( vi.has_flag( VPFLAG_FLUIDTANK ) ) {
+                                    vk.variant |= vmx_tank;
+                                }
+                                if( vi.has_flag( VPFLAG_SOLAR_PANEL ) ) {
+                                    vk.variant |= vmx_solar;
+                                }
+                                if( !have_body_color && vi.location == vpart_location_id( "structure" ) ) {
                                     vk.color = pc;
                                 }
                             }
-                            if( vi.has_flag( VPFLAG_ENGINE ) ) {
-                                vk.param |= vmv_engine;
+                            if( any && vehicle_sprite ) {
+                                vk.param &= static_cast<uint8_t>( ~( vmv_seat | vmv_engine | vmv_turret | vmv_light ) );
+                                vk.variant &= static_cast<uint8_t>( ~( vmx_cargo | vmx_tank | vmx_solar ) );
+                                const bool shell = ( vk.param & ( vmv_board | vmv_window ) ) || ( vk.variant & vmx_door );
+                                const float top = ( vk.param & vmv_roof ) ? 1.51f : shell ? 1.385f : 0.51f;
+                                add_sprite( sprite_flat, *veh_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, veh_yaw, top, light,
+                                            0.0f );
                             }
-                            if( vi.has_flag( VPFLAG_CONE_LIGHT ) || vi.has_flag( VPFLAG_WIDE_CONE_LIGHT ) ||
-                                vi.has_flag( VPFLAG_HALF_CIRCLE_LIGHT ) ) {
-                                vk.param |= vmv_light;
-                                if( vp.enabled && !vp.is_broken() ) {
-                                    add_light( p, 0.7f, 9.0f, 0.95f, 0.9f, 0.75f );
+                            if( any ) {
+                                if( vk.color.r == 0 && vk.color.g == 0 && vk.color.b == 0 ) {
+                                    vk.color = rgb( 120, 122, 128 );
+                                }
+                                if( vk.variant & vmx_cargo && vk.param & vmv_seat ) {
+                                    vk.variant &= ~vmx_cargo;
+                                }
+                                const float yaw = static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f;
+                                const vpart_display vd = veh.get_display_of_tile( ovp->mount_pos() );
+                                const voxelset_entry *ve = vd.id.is_null() ? nullptr : find_chain( vset, "vp_" + vd.id.str(),
+                                                           vpart_looks_like );
+                                add_at( main_lists, vk, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f, yaw, light, 0.0f, 1.0f, { 255, 255, 255 }, ve );
+                            }
+                        }
+                        const sprite_ref *trap_sprite = nullptr;
+                        if( sprite_style && here.can_see_trap_at( p, you ) ) {
+                            trap_sprite = atlas.fg( here.tr_at( p ).id.str() );
+                            if( trap_sprite ) {
+                                add_sprite( sprite_flat, *trap_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f, 0.016f, light, 0.0f );
+                            }
+                        }
+                        if( trap_sprite == nullptr && here.can_see_trap_at( p, you ) ) {
+                            const trap &tr = here.tr_at( p );
+                            vm_key tk;
+                            tk.kind = vm_kind::trap;
+                            tk.color = soften( to_rgb( tr.color ) );
+                            add_at( main_lists, tk, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, voxel_size, 0.0f, light, 0.0f, 1.0f, { 255, 255, 255 },
+                                    find_chain( vset, tr.id.str(), no_looks_like ) );
+                        }
+                        if( here.has_items( p ) ) {
+                            map_stack stack = here.i_at( p );
+                            int count = 0;
+                            const item *top = nullptr;
+                            for( const item &it : stack ) {
+                                if( count == 0 ) {
+                                    top = &it;
+                                }
+                                ++count;
+                            }
+                            const float lift = ovp ? voxel_size * 4.0f : here.has_furn( p ) &&
+                                               furniture_style( here.furn( p ) ).kind == vm_kind::table ? voxel_size * 6.0f : voxel_size;
+                            const uint32_t ih = voxel_hash( x, y, z, 5 );
+                            const sprite_ref *item_sprite = sprite_style && top ? find_sprite( top->typeId().str(),
+                                                            item_looks_like ) : nullptr;
+                            if( item_sprite ) {
+                                add_sprite( sprite_flat, *item_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f, lift + 0.02f, light, 0.0f );
+                            } else if( top ) {
+                                vm_key ik;
+                                ik.kind = item_kind( *top );
+                                ik.color = soften( to_rgb( top->color() ) );
+                                if( ik.kind == vm_kind::item_corpse ) {
+                                    ik.color = voxel_mix( ik.color, rgb( 140, 120, 100 ), 0.5f );
+                                }
+                                const voxelset_entry *ie = find_chain( vset, top->typeId().str(), item_looks_like );
+                                if( ie ) {
+                                    add_at( main_lists, ik, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, lift, static_cast<float>( ih % 8 ) * pi * 0.25f, light, 0.0f,
+                                            1.0f, { 255, 255, 255 }, ie, ih );
+                                } else if( ik.kind == vm_kind::item_pile ) {
+                                    ik.variant = static_cast<uint8_t>( std::min( count, 3 ) - 1 + 3 * ( ih % 3 ) );
+                                    add( main_lists, ik, p, lift, 0.0f, light, 0.0f, 1.0f, ik.color );
+                                } else {
+                                    ik.variant = static_cast<uint8_t>( ih % 2 );
+                                    add( main_lists, ik, p, lift, static_cast<float>( ih % 8 ) * pi * 0.25f, light, 0.0f );
                                 }
                             }
-                            if( ( vi.has_flag( VPFLAG_DOME_LIGHT ) || vi.has_flag( VPFLAG_AISLE_LIGHT ) ||
-                                  vi.has_flag( VPFLAG_CIRCLE_LIGHT ) ) && vp.enabled && !vp.is_broken() ) {
-                                add_light( p, 1.2f, 6.0f, 0.9f, 0.88f, 0.8f );
-                            }
-                            if( vi.has_flag( "TURRET" ) ) {
-                                vk.param |= vmv_turret;
-                            }
-                            if( vi.has_flag( VPFLAG_CARGO ) && !vi.has_flag( VPFLAG_WHEEL ) ) {
-                                vk.variant |= vmx_cargo;
-                            }
-                            if( vi.has_flag( VPFLAG_FLUIDTANK ) ) {
-                                vk.variant |= vmx_tank;
-                            }
-                            if( vi.has_flag( VPFLAG_SOLAR_PANEL ) ) {
-                                vk.variant |= vmx_solar;
-                            }
-                            if( !have_body_color && vi.location == vpart_location_id( "structure" ) ) {
-                                vk.color = pc;
+                            if( count > 1 && !item_sprite ) {
+                                vm_key pk;
+                                pk.kind = vm_kind::item_pile;
+                                pk.variant = static_cast<uint8_t>( std::min( count - 1, 3 ) - 1 + 3 * ( ( ih >> 4 ) % 3 ) );
+                                add( main_lists, pk, p, lift, pi * 0.5f, light, 0.0f, 0.8f, rgb( 200, 190, 170 ) );
                             }
                         }
-                        if( any && vehicle_sprite ) {
-                            vk.param &= static_cast<uint8_t>( ~( vmv_seat | vmv_engine | vmv_turret | vmv_light ) );
-                            vk.variant &= static_cast<uint8_t>( ~( vmx_cargo | vmx_tank | vmx_solar ) );
-                            const bool shell = ( vk.param & ( vmv_board | vmv_window ) ) || ( vk.variant & vmx_door );
-                            const float top = ( vk.param & vmv_roof ) ? 1.51f : shell ? 1.385f : 0.51f;
-                            add_sprite( sprite_flat, *veh_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, veh_yaw, top, light,
-                                        0.0f );
-                        }
-                        if( any ) {
-                            if( vk.color.r == 0 && vk.color.g == 0 && vk.color.b == 0 ) {
-                                vk.color = rgb( 120, 122, 128 );
-                            }
-                            if( vk.variant & vmx_cargo && vk.param & vmv_seat ) {
-                                vk.variant &= ~vmx_cargo;
-                            }
-                            const float yaw = static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f;
-                            const vpart_display vd = veh.get_display_of_tile( ovp->mount_pos() );
-                            const voxelset_entry *ve = vd.id.is_null() ? nullptr : find_chain( vset, "vp_" + vd.id.str(),
-                                                       vpart_looks_like );
-                            add_at( main_lists, vk, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f, yaw, light, 0.0f, 1.0f, { 255, 255, 255 }, ve );
-                        }
-                    }
-                    const sprite_ref *trap_sprite = nullptr;
-                    if( sprite_style && here.can_see_trap_at( p, you ) ) {
-                        trap_sprite = atlas.fg( here.tr_at( p ).id.str() );
-                        if( trap_sprite ) {
-                            add_sprite( sprite_flat, *trap_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f, 0.016f, light, 0.0f );
-                        }
-                    }
-                    if( trap_sprite == nullptr && here.can_see_trap_at( p, you ) ) {
-                        const trap &tr = here.tr_at( p );
-                        vm_key tk;
-                        tk.kind = vm_kind::trap;
-                        tk.color = soften( to_rgb( tr.color ) );
-                        add_at( main_lists, tk, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, voxel_size, 0.0f, light, 0.0f, 1.0f, { 255, 255, 255 },
-                                find_chain( vset, tr.id.str(), no_looks_like ) );
-                    }
-                    if( here.has_items( p ) ) {
-                        map_stack stack = here.i_at( p );
-                        int count = 0;
-                        const item *top = nullptr;
-                        for( const item &it : stack ) {
-                            if( count == 0 ) {
-                                top = &it;
-                            }
-                            ++count;
-                        }
-                        const float lift = ovp ? voxel_size * 4.0f : here.has_furn( p ) &&
-                                           furniture_style( here.furn( p ) ).kind == vm_kind::table ? voxel_size * 6.0f : voxel_size;
-                        const uint32_t ih = voxel_hash( x, y, z, 5 );
-                        const sprite_ref *item_sprite = sprite_style && top ? find_sprite( top->typeId().str(),
-                                                        item_looks_like ) : nullptr;
-                        if( item_sprite ) {
-                            add_sprite( sprite_flat, *item_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f, lift + 0.02f, light, 0.0f );
-                        } else if( top ) {
-                            vm_key ik;
-                            ik.kind = item_kind( *top );
-                            ik.color = soften( to_rgb( top->color() ) );
-                            if( ik.kind == vm_kind::item_corpse ) {
-                                ik.color = voxel_mix( ik.color, rgb( 140, 120, 100 ), 0.5f );
-                            }
-                            const voxelset_entry *ie = find_chain( vset, top->typeId().str(), item_looks_like );
-                            if( ie ) {
-                                add_at( main_lists, ik, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, lift, static_cast<float>( ih % 8 ) * pi * 0.25f, light, 0.0f,
-                                        1.0f, { 255, 255, 255 }, ie, ih );
-                            } else if( ik.kind == vm_kind::item_pile ) {
-                                ik.variant = static_cast<uint8_t>( std::min( count, 3 ) - 1 + 3 * ( ih % 3 ) );
-                                add( main_lists, ik, p, lift, 0.0f, light, 0.0f, 1.0f, ik.color );
-                            } else {
-                                ik.variant = static_cast<uint8_t>( ih % 2 );
-                                add( main_lists, ik, p, lift, static_cast<float>( ih % 8 ) * pi * 0.25f, light, 0.0f );
-                            }
-                        }
-                        if( count > 1 && !item_sprite ) {
-                            vm_key pk;
-                            pk.kind = vm_kind::item_pile;
-                            pk.variant = static_cast<uint8_t>( std::min( count - 1, 3 ) - 1 + 3 * ( ( ih >> 4 ) % 3 ) );
-                            add( main_lists, pk, p, lift, pi * 0.5f, light, 0.0f, 0.8f, rgb( 200, 190, 170 ) );
-                        }
-                    }
-                    const field &fld = here.field_at( p );
-                    const field_type_id ftype = fld.displayed_field_type();
-                    if( ftype ) {
-                        const field_entry *fe = fld.find_field( ftype );
-                        if( fe ) {
-                            const std::string fid = ftype.id().str();
-                            const int intensity = std::clamp( fe->get_field_intensity(), 1, 3 );
-                            vm_key fk;
-                            fk.color = soften( to_rgb( fe->color() ) );
-                            float lift = voxel_size;
-                            bool draw = true;
-                            if( has_any( fid, "fire", "flame", "incendiary" ) ) {
-                                fk.kind = vm_kind::fire;
-                                fk.variant = static_cast<uint8_t>( intensity - 1 );
-                                add_light( p, 0.6f, 3.0f + 2.0f * intensity, 1.0f * ( 0.5f + 0.25f * intensity ),
-                                           0.55f * ( 0.5f + 0.25f * intensity ), 0.2f * ( 0.5f + 0.25f * intensity ) );
-                            } else if( has_any( fid, "blood", "bile", "gibs", "acid", "slime", "sap", "sludge", "oil",
-                                                "juice", "goo", "mess" ) ) {
-                                fk.kind = vm_kind::splat;
-                                fk.variant = static_cast<uint8_t>( voxel_hash( x, y, z, 9 ) % 4 );
-                            } else if( has_any( fid, "smoke", "gas", "fog", "mist", "haze", "cloud", "toxic", "tear",
-                                                "miasma", "relax", "nuke", "fume", "steam" ) ) {
-                                fk.kind = vm_kind::cloud;
-                                fk.variant = static_cast<uint8_t>( intensity );
-                                lift = 0.0f;
-                            } else {
-                                draw = find_chain( vset, fid, no_looks_like ) != nullptr;
-                            }
-                            const sprite_ref *field_sprite = sprite_style ? atlas.fg( fid ) : nullptr;
-                            if( field_sprite ) {
-                                add_sprite( fk.kind == vm_kind::fire ? sprite_billboard : sprite_flat, *field_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f,
-                                            fk.kind == vm_kind::fire ? voxel_size : 0.02f, light, 0.0f );
-                            } else if( draw ) {
-                                add_at( main_lists, fk, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, lift, 0.0f, light, 0.0f, 1.0f, { 255, 255, 255 },
-                                        find_chain( vset, fid, no_looks_like ), voxel_hash( x, y, z, 11 ) );
-                            }
-                        }
-                    }
-                } else {
-                    const tripoint_abs_ms abs = here.get_abs( p );
-                    if( you.has_memory_at( abs ) ) {
-                        const memorized_tile &mt = you.get_memorized_tile( abs );
-                        const ter_str_id tid( mt.get_ter_id() );
-                        if( !mt.get_ter_id().empty() && tid.is_valid() ) {
-                            const tile_style &mts = terrain_style( tid.id() );
-                            if( !sprite_style || !sprite_terrain( p, mt.get_ter_id(), mts, memory_light, memory_desat ) ) {
-                                add_style( mts, p, memory_light, memory_desat, false );
-                            }
-                        }
-                        const std::string &dec = mt.get_dec_id();
-                        if( dec.compare( 0, 2, "f_" ) == 0 ) {
-                            const furn_str_id fid( dec );
-                            if( fid.is_valid() ) {
-                                const tile_style &mfs = furniture_style( fid.id() );
-                                if( !sprite_style || !sprite_furniture( p, dec, mfs, memory_light, memory_desat ) ) {
-                                    add_style( mfs, p, memory_light, memory_desat, true );
+                        const field &fld = here.field_at( p );
+                        const field_type_id ftype = fld.displayed_field_type();
+                        if( ftype ) {
+                            const field_entry *fe = fld.find_field( ftype );
+                            if( fe ) {
+                                const std::string fid = ftype.id().str();
+                                const int intensity = std::clamp( fe->get_field_intensity(), 1, 3 );
+                                vm_key fk;
+                                fk.color = soften( to_rgb( fe->color() ) );
+                                float lift = voxel_size;
+                                bool draw = true;
+                                if( has_any( fid, "fire", "flame", "incendiary" ) ) {
+                                    fk.kind = vm_kind::fire;
+                                    fk.variant = static_cast<uint8_t>( intensity - 1 );
+                                    fire_tiles.push_back( p );
+                                    add_light( p, 0.6f, 3.0f + 2.0f * intensity, 1.0f * ( 0.5f + 0.25f * intensity ),
+                                               0.55f * ( 0.5f + 0.25f * intensity ), 0.2f * ( 0.5f + 0.25f * intensity ) );
+                                } else if( has_any( fid, "blood", "bile", "gibs", "acid", "slime", "sap", "sludge", "oil",
+                                                    "juice", "goo", "mess" ) ) {
+                                    fk.kind = vm_kind::splat;
+                                    fk.variant = static_cast<uint8_t>( voxel_hash( x, y, z, 9 ) % 4 );
+                                } else if( has_any( fid, "smoke", "gas", "fog", "mist", "haze", "cloud", "toxic", "tear",
+                                                    "miasma", "relax", "nuke", "fume", "steam" ) ) {
+                                    fk.kind = vm_kind::cloud;
+                                    fk.variant = static_cast<uint8_t>( intensity );
+                                    lift = 0.0f;
+                                } else {
+                                    draw = find_chain( vset, fid, no_looks_like ) != nullptr;
+                                }
+                                const sprite_ref *field_sprite = sprite_style ? atlas.fg( fid ) : nullptr;
+                                if( field_sprite ) {
+                                    add_sprite( fk.kind == vm_kind::fire ? sprite_billboard : sprite_flat, *field_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f,
+                                                fk.kind == vm_kind::fire ? voxel_size : 0.02f, light, 0.0f );
+                                } else if( draw ) {
+                                    add_at( main_lists, fk, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, lift, 0.0f, light, 0.0f, 1.0f, { 255, 255, 255 },
+                                            find_chain( vset, fid, no_looks_like ), voxel_hash( x, y, z, 11 ) );
                                 }
                             }
-                        } else if( dec.compare( 0, 3, "vp_" ) == 0 ) {
-                            vm_key vk;
-                            vk.kind = vm_kind::veh_frame;
-                            vk.color = rgb( 120, 120, 125 );
-                            add( main_lists, vk, p, 0.0f, 0.0f, memory_light, memory_desat );
                         }
+                    } else {
+                        const tripoint_abs_ms abs = here.get_abs( p );
+                        if( you.has_memory_at( abs ) ) {
+                            const memorized_tile &mt = you.get_memorized_tile( abs );
+                            const ter_str_id tid( mt.get_ter_id() );
+                            if( !mt.get_ter_id().empty() && tid.is_valid() ) {
+                                const tile_style &mts = terrain_style( tid.id() );
+                                if( !sprite_style || !sprite_terrain( p, mt.get_ter_id(), mts, memory_light, memory_desat ) ) {
+                                    add_style( mts, p, memory_light, memory_desat, false );
+                                }
+                            }
+                            const std::string &dec = mt.get_dec_id();
+                            if( dec.compare( 0, 2, "f_" ) == 0 ) {
+                                const furn_str_id fid( dec );
+                                if( fid.is_valid() ) {
+                                    const tile_style &mfs = furniture_style( fid.id() );
+                                    if( !sprite_style || !sprite_furniture( p, dec, mfs, memory_light, memory_desat ) ) {
+                                        add_style( mfs, p, memory_light, memory_desat, true );
+                                    }
+                                }
+                            } else if( dec.compare( 0, 3, "vp_" ) == 0 ) {
+                                vm_key vk;
+                                vk.kind = vm_kind::veh_frame;
+                                vk.color = rgb( 120, 120, 125 );
+                                add( main_lists, vk, p, 0.0f, 0.0f, memory_light, memory_desat );
+                            }
+                        }
+                    }
+                    if( !ts.no_floor ) {
+                        break;
                     }
                 }
-                if( !ts.no_floor ) {
+            }
+        }
+    
+        if( daylight > 0.02f && center.z() < OVERMAP_HEIGHT ) {
+            drawing_shadow = true;
+            const int sr = radius + 6;
+            for( int up = 1; up <= 2; ++up ) {
+                const int z = center.z() + up;
+                if( z > OVERMAP_HEIGHT ) {
                     break;
                 }
-            }
-        }
-    }
-
-    if( daylight > 0.02f && center.z() < OVERMAP_HEIGHT ) {
-        drawing_shadow = true;
-        const int sr = radius + 6;
-        for( int up = 1; up <= 2; ++up ) {
-            const int z = center.z() + up;
-            if( z > OVERMAP_HEIGHT ) {
-                break;
-            }
-            for( int y = std::max( 0, center.y() - sr ); y <= std::min( MAPSIZE_Y - 1, center.y() + sr ); ++y ) {
-                for( int x = std::max( 0, center.x() - sr ); x <= std::min( MAPSIZE_X - 1, center.x() + sr ); ++x ) {
-                    const tripoint_bub_ms p( x, y, z );
-                    const tile_style &ts = terrain_style( here.ter( p ) );
-                    if( ts.no_floor ) {
-                        continue;
+                for( int y = std::max( 0, center.y() - sr ); y <= std::min( MAPSIZE_Y - 1, center.y() + sr ); ++y ) {
+                    for( int x = std::max( 0, center.x() - sr ); x <= std::min( MAPSIZE_X - 1, center.x() + sr ); ++x ) {
+                        const tripoint_bub_ms p( x, y, z );
+                        const tile_style &ts = terrain_style( here.ter( p ) );
+                        if( ts.no_floor ) {
+                            continue;
+                        }
+                        if( ts.kind == vm_kind::wall || ts.kind == vm_kind::window || ts.kind == vm_kind::door ) {
+                            vm_key k;
+                            k.kind = vm_kind::wall;
+                            add( shadow_lists, k, p, 0.0f, 0.0f, 1.0f, 0.0f );
+                        } else {
+                            vm_key k;
+                            k.kind = vm_kind::floor;
+                            add( shadow_lists, k, p, 0.0f, 0.0f, 1.0f, 0.0f );
+                        }
                     }
-                    if( ts.kind == vm_kind::wall || ts.kind == vm_kind::window || ts.kind == vm_kind::door ) {
-                        vm_key k;
-                        k.kind = vm_kind::wall;
-                        add( shadow_lists, k, p, 0.0f, 0.0f, 1.0f, 0.0f );
-                    } else {
-                        vm_key k;
-                        k.kind = vm_kind::floor;
-                        add( shadow_lists, k, p, 0.0f, 0.0f, 1.0f, 0.0f );
+                }
+            }
+            drawing_shadow = false;
+        }
+        if( get_option<bool>( "VOXEL_UPPER_FLOORS" ) && here.is_outside( you_pos ) ) {
+            const float cx = std::sin( cam.yaw );
+            const float cz = std::cos( cam.yaw );
+            for( int up = 1; up <= 2; ++up ) {
+                const int z = center.z() + up;
+                if( z > OVERMAP_HEIGHT ) {
+                    break;
+                }
+                for( int y = y0; y <= y1; ++y ) {
+                    for( int x = x0; x <= x1; ++x ) {
+                        if( !known_column[static_cast<size_t>( y - y0 ) * columns_w + ( x - x0 )] ) {
+                            continue;
+                        }
+                        const float dx = static_cast<float>( x - you_pos.x() );
+                        const float dy = static_cast<float>( y - you_pos.y() );
+                        if( dx * dx + dy * dy < 20.0f ) {
+                            continue;
+                        }
+                        const float along = dx * cx + dy * cz;
+                        const float lateral = std::fabs( dx * cz - dy * cx );
+                        if( along > 0.0f && along < 16.0f && lateral < 2.5f + along * 0.5f ) {
+                            continue;
+                        }
+                        const tripoint_bub_ms p( x, y, z );
+                        const ter_id ter = here.ter( p );
+                        const tile_style &ts = terrain_style( ter );
+                        if( ts.no_floor || !ts.draw ) {
+                            continue;
+                        }
+                        const float light = light_value( here.ambient_light_at( p ), lit_level::LIT );
+                        if( !sprite_style || !sprite_terrain( p, ter.id().str(), ts, light, 0.0f ) ) {
+                            add_style( ts, p, light, 0.0f, false );
+                        }
                     }
                 }
             }
         }
-        drawing_shadow = false;
+        occ_floor_z = center.z();
+        upload_occupancy();
+        cache_valid = !animating;
+        if( cache_valid ) {
+            cached_key = key;
+            cached_main = main_lists;
+            cached_shadow = shadow_lists;
+            cached_sprites = sprite_batches;
+            cached_light_pos = light_pos;
+            cached_light_col = light_col;
+            cached_ambient = ambient;
+            cached_fires = fire_tiles;
+        }
     }
-
-    const tripoint_bub_ms you_pos = you.pos_bub( here );
     if( you_pos != last_avatar_pos ) {
         const point d = ( you_pos.xy() - last_avatar_pos.xy() ).raw();
         if( d != point::zero && std::abs( d.x ) <= 1 && std::abs( d.y ) <= 1 ) {
@@ -3029,9 +3331,14 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     float yaw ) {
         const float light = creature_light( p );
         const float scale = size_scale( ch.get_size() );
-        const vec3 pos = animated( &ch, p ) + lunge_offset( &ch );
+        float phase = -1.0f;
+        const vec3 pos = animated( &ch, p, &phase ) + lunge_offset( &ch );
+        const float attack = last_lunge;
         if( &ch == &you ) {
             avatar_display = pos;
+            if( cam.mode == 2 ) {
+                return;
+            }
         }
         if( sprite_style && sprite_character( ch, pos, light ) ) {
             return;
@@ -3042,8 +3349,17 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         if( ce == nullptr && vset ) {
             ce = vset->find_id( base );
         }
-        add_at( main_lists, k, pos, voxel_size, yaw, light, 0.0f, scale, flash_tint( ch ), ce );
+        const voxel_rgb tint = flash_tint( ch, pos );
+        last_arm_swing = 0.0f;
+        if( ce ) {
+            add_at( main_lists, k, pos, voxel_size, yaw, light, 0.0f, scale, tint, ce );
+        } else {
+            add_creature_parts( k, pos, yaw, light, scale, tint, phase, attack );
+        }
         if( const std::optional<vm_key> hk = held_key( ch ) ) {
+            if( last_arm_swing != 0.0f ) {
+                next_anim = { 8.5f * voxel_size, 0.5f, last_arm_swing };
+            }
             add_at( main_lists, *hk, pos, voxel_size, yaw, light, 0.0f, scale );
         }
     };
@@ -3051,43 +3367,6 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     if( own_light > 0.0f ) {
         add_light( you_pos, 1.0f, std::clamp( std::sqrt( own_light ) * 2.0f, 3.0f, 14.0f ), 0.85f, 0.78f,
                    0.6f );
-    }
-    if( get_option<bool>( "VOXEL_UPPER_FLOORS" ) && here.is_outside( you_pos ) ) {
-        const float cx = std::sin( cam.yaw );
-        const float cz = std::cos( cam.yaw );
-        for( int up = 1; up <= 2; ++up ) {
-            const int z = center.z() + up;
-            if( z > OVERMAP_HEIGHT ) {
-                break;
-            }
-            for( int y = y0; y <= y1; ++y ) {
-                for( int x = x0; x <= x1; ++x ) {
-                    if( !known_column[static_cast<size_t>( y - y0 ) * columns_w + ( x - x0 )] ) {
-                        continue;
-                    }
-                    const float dx = static_cast<float>( x - you_pos.x() );
-                    const float dy = static_cast<float>( y - you_pos.y() );
-                    if( dx * dx + dy * dy < 20.0f ) {
-                        continue;
-                    }
-                    const float along = dx * cx + dy * cz;
-                    const float lateral = std::fabs( dx * cz - dy * cx );
-                    if( along > 0.0f && along < 16.0f && lateral < 2.5f + along * 0.5f ) {
-                        continue;
-                    }
-                    const tripoint_bub_ms p( x, y, z );
-                    const ter_id ter = here.ter( p );
-                    const tile_style &ts = terrain_style( ter );
-                    if( ts.no_floor || !ts.draw ) {
-                        continue;
-                    }
-                    const float light = light_value( here.ambient_light_at( p ), lit_level::LIT );
-                    if( !sprite_style || !sprite_terrain( p, ter.id().str(), ts, light, 0.0f ) ) {
-                        add_style( ts, p, light, 0.0f, false );
-                    }
-                }
-            }
-        }
     }
     if( hurt_now( you ) ) {
         for( const monster &mon : g->all_monsters() ) {
@@ -3134,7 +3413,9 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         if( !in_view( p ) || !you.sees( here, mon ) ) {
             continue;
         }
-        const vec3 mpos = animated( &mon, p ) + lunge_offset( &mon );
+        float mphase = -1.0f;
+        const vec3 mpos = animated( &mon, p, &mphase ) + lunge_offset( &mon );
+        const float mattack = last_lunge;
         if( sprite_style ) {
             if( const sprite_ref *ms = find_sprite( mon.type->id.str(), monster_looks_like ) ) {
                 add_sprite( sprite_billboard, *ms, mpos, 0.0f, voxel_size, creature_light( p ), 0.0f,
@@ -3150,8 +3431,12 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         gh.light = creature_light( p );
         gh.custom = find_chain( vset, mon.type->id.str(), monster_looks_like );
         seen_monsters[&mon] = gh;
-        add_at( main_lists, gh.key, mpos, voxel_size, gh.yaw, gh.light, 0.0f, gh.scale, flash_tint( mon ),
-                gh.custom );
+        const voxel_rgb mtint = flash_tint( mon, mpos );
+        if( gh.custom ) {
+            add_at( main_lists, gh.key, mpos, voxel_size, gh.yaw, gh.light, 0.0f, gh.scale, mtint, gh.custom );
+        } else {
+            add_creature_parts( gh.key, mpos, gh.yaw, gh.light, gh.scale, mtint, mphase, mattack );
+        }
     }
 
     for( auto it = motions.begin(); it != motions.end(); ) {
@@ -3183,6 +3468,17 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         add_at( main_lists, it->key, it->pos, voxel_size - t * t * level_height * 0.45f, it->yaw + t * 0.6f,
                 it->light, 0.0f, it->scale * ( 1.0f - 0.25f * t ), tint, it->custom );
         ++it;
+    }
+
+    add_particles();
+    if( cam.hover_set ) {
+        cam.hover = voxel_view::pick( cam.hover_pixel, cam.hover_size );
+    }
+    if( cam.hover && *cam.hover != center && here.inbounds( *cam.hover ) ) {
+        vm_key hk;
+        hk.kind = vm_kind::marker;
+        hk.color = rgb( 235, 240, 245 );
+        add( main_lists, hk, *cam.hover, voxel_size * 1.2f, 0.0f, 1.0f, 0.0f );
     }
 
     const weather_animation_t &anim = get_weather().weather_id->weather_animation;
@@ -3301,6 +3597,8 @@ void voxel_renderer::draw_pass( instance_lists &lists, bool glass, GLuint progra
                                   reinterpret_cast<void *>( base + 4 * sizeof( float ) ) );
         gl.glVertexAttribPointer( 5, 4, GL_FLOAT, GL_FALSE, stride,
                                   reinterpret_cast<void *>( base + 8 * sizeof( float ) ) );
+        gl.glVertexAttribPointer( 6, 4, GL_FLOAT, GL_FALSE, stride,
+                                  reinterpret_cast<void *>( base + 12 * sizeof( float ) ) );
         gl.glDrawArraysInstanced( GL_TRIANGLES, 0, mesh.count, static_cast<GLsizei>( range.second ) );
     };
     const bool shadow = &lists == &shadow_lists;
@@ -3323,6 +3621,7 @@ bool voxel_renderer::hurt_now( const Creature &c ) const
 
 vec3 voxel_renderer::lunge_offset( const void *id )
 {
+    last_lunge = 0.0f;
     const auto it = lunges.find( id );
     if( it == lunges.end() ) {
         return vec3{};
@@ -3333,10 +3632,165 @@ vec3 voxel_renderer::lunge_offset( const void *id )
         return vec3{};
     }
     animating = true;
-    return it->second.first * ( 0.35f * std::sin( t * pi ) );
+    last_lunge = std::sin( t * pi );
+    return it->second.first * ( 0.35f * last_lunge );
 }
 
-voxel_rgb voxel_renderer::flash_tint( const Creature &c )
+void voxel_renderer::upload_occupancy()
+{
+    voxel_gl_api &gl = voxel_gl();
+    if( occ_tex == 0 ) {
+        gl.glGenTextures( 1, &occ_tex );
+        gl.glBindTexture( GL_TEXTURE_2D, occ_tex );
+        gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+        gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+        gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+        gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+    }
+    gl.glBindTexture( GL_TEXTURE_2D, occ_tex );
+    gl.glPixelStorei( GL_UNPACK_ALIGNMENT, 1 );
+    gl.glTexImage2D( GL_TEXTURE_2D, 0, GL_R8, MAPSIZE_X, MAPSIZE_Y, 0, GL_RED, GL_UNSIGNED_BYTE,
+                     occ_data.data() );
+}
+
+bool voxel_renderer::door_animation( const tile_style &st, const tripoint_bub_ms &p, const vm_key &k,
+                                     float light, float desat )
+{
+    const tripoint_abs_ms abs = get_map().get_abs( p );
+    const bool is_open = st.kind == vm_kind::door_open;
+    const auto it = doors.find( abs );
+    if( it == doors.end() ) {
+        if( doors.size() > 4096 ) {
+            doors.clear();
+        }
+        doors[abs] = { is_open, 0 };
+        return false;
+    }
+    door_state &ds = it->second;
+    if( ds.open != is_open ) {
+        ds.open = is_open;
+        ds.start = now_ms;
+    }
+    if( ds.start == 0 ) {
+        return false;
+    }
+    float t = static_cast<float>( now_ms - ds.start ) / 300.0f;
+    if( t >= 1.0f ) {
+        ds.start = 0;
+        return false;
+    }
+    animating = true;
+    t = t * t * ( 3.0f - 2.0f * t );
+    const float angle = ( is_open ? t : 1.0f - t ) * pi * 0.5f;
+    const vec3 pos{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) };
+    vm_key frame = k;
+    frame.kind = vm_kind::door;
+    frame.variant = 2;
+    add_at( main_lists, frame, pos, 0.0f, 0.0f, light, desat );
+    vm_key leaf = k;
+    leaf.kind = vm_kind::door;
+    leaf.variant = 1;
+    const bool along_z = ( k.param & 1 ) != 0;
+    const float hx = along_z ? 0.0f : 0.375f;
+    const float hz = along_z ? 0.375f : 0.0f;
+    const float c = std::cos( angle );
+    const float s = std::sin( angle );
+    const vec3 shift{ hx - ( c * hx - s * hz ), 0.0f, hz - ( s * hx + c * hz ) };
+    add_at( main_lists, leaf, pos + shift, 0.0f, angle, light, desat );
+    return true;
+}
+
+void voxel_renderer::add_creature_parts( const vm_key &key, const vec3 &pos, float yaw, float light,
+        float scale, const voxel_rgb &tint, float phase, float attack )
+{
+    if( !vm_has_limbs( key.kind ) || !get_option<bool>( "VOXEL_LIMB_ANIMATION" ) ) {
+        add_at( main_lists, key, pos, voxel_size, yaw, light, 0.0f, scale, tint );
+        return;
+    }
+    const bool quad = key.kind == vm_kind::quadruped;
+    const float stride = phase >= 0.0f ? std::sin( phase * 2.0f * pi ) * ( quad ? 0.45f : 0.7f ) : 0.0f;
+    const std::array<std::pair<uint8_t, float>, 5> parts = { {
+            { vmp_body, 0.0f },
+            { vmp_leg_a, stride },
+            { vmp_leg_b, -stride },
+            { vmp_arm_a, -stride * 0.6f + attack * 1.2f },
+            { vmp_arm_b, stride * 0.6f + attack * 1.3f }
+        }
+    };
+    const size_t count = quad ? 3 : 5;
+    for( size_t i = 0; i < count; ++i ) {
+        vm_key part = key;
+        part.material = static_cast<vm_material>( parts[i].first );
+        if( parts[i].second != 0.0f ) {
+            next_anim = { vm_limb_pivot_y( key.kind, key.param, parts[i].first ) * voxel_size, 0.5f,
+                          parts[i].second
+                        };
+        }
+        add_at( main_lists, part, pos, voxel_size, yaw, light, 0.0f, scale, tint );
+    }
+    last_arm_swing = stride * 0.6f + attack * 1.3f;
+}
+
+void voxel_renderer::add_particles()
+{
+    if( !get_option<bool>( "VOXEL_PARTICLES" ) ) {
+        bursts.clear();
+        return;
+    }
+    const float time_s = static_cast<float>( now_ms % 1000000 ) / 1000.0f;
+    size_t shown = 0;
+    for( const tripoint_bub_ms &p : fire_tiles ) {
+        if( ++shown > 40 ) {
+            break;
+        }
+        ambient = true;
+        for( int i = 0; i < 4; ++i ) {
+            const float seed = voxel_noise( p.x(), p.y(), i, 31 );
+            float ph = time_s * 0.22f + seed;
+            ph -= std::floor( ph );
+            vm_key smoke;
+            smoke.kind = vm_kind::particle;
+            const uint8_t grey = static_cast<uint8_t>( 70 + 60 * ph );
+            smoke.color = { grey, grey, grey };
+            const vec3 pos{ p.x() + std::sin( ph * 5.0f + i ) * 0.2f, static_cast<float>( p.z() ),
+                            p.y() + std::cos( ph * 4.0f + i * 2.0f ) * 0.2f };
+            add_at( main_lists, smoke, pos, 0.5f + ph * 2.6f, ph * 3.0f, 0.8f, 0.0f, 0.8f + ph * 1.8f );
+        }
+        for( int i = 0; i < 3; ++i ) {
+            const float seed = voxel_noise( p.x(), p.y(), i, 47 );
+            float ph = time_s * 0.85f + seed;
+            ph -= std::floor( ph );
+            vm_key spark;
+            spark.kind = vm_kind::spark;
+            spark.color = { 255, static_cast<uint8_t>( 200 - 120 * ph ), 60 };
+            const vec3 pos{ p.x() + std::sin( ph * 13.0f + i * 2.1f ) * 0.3f, static_cast<float>( p.z() ),
+                            p.y() + std::cos( ph * 11.0f + i ) * 0.3f };
+            add_at( main_lists, spark, pos, 0.25f + ph * 1.7f, 0.0f, 1.0f, 0.0f, 0.6f * ( 1.0f - ph ) + 0.2f );
+        }
+    }
+    for( auto it = bursts.begin(); it != bursts.end(); ) {
+        const float t = static_cast<float>( now_ms - it->start ) / 380.0f;
+        if( t >= 1.0f ) {
+            it = bursts.erase( it );
+            continue;
+        }
+        animating = true;
+        for( int i = 0; i < 10; ++i ) {
+            const float a = voxel_noise( i, 0, 0, it->seed ) * 2.0f * pi;
+            const float speed = 0.4f + 0.6f * voxel_noise( i, 1, 0, it->seed );
+            vm_key drop;
+            drop.kind = vm_kind::particle;
+            drop.color = { 150, 15, 15 };
+            const vec3 pos = it->pos + vec3{ std::cos( a ) * speed * t, 0.0f, std::sin( a ) * speed * t };
+            const float lift = std::max( 0.05f, 0.7f + 1.4f * t - 2.6f * t * t );
+            add_at( main_lists, drop, pos, lift, a, 1.0f, 0.0f, 0.6f );
+        }
+        ++it;
+    }
+}
+
+
+voxel_rgb voxel_renderer::flash_tint( const Creature &c, const vec3 &pos )
 {
     const int hp = c.get_hp();
     std::pair<int, uint64_t> &e = hp_track[&c];
@@ -3346,6 +3800,7 @@ voxel_rgb voxel_renderer::flash_tint( const Creature &c )
     }
     if( hp < e.first ) {
         e.second = now_ms;
+        bursts.push_back( { pos, now_ms, static_cast<uint32_t>( now_ms ) ^ static_cast<uint32_t>( hp ) } );
     }
     e.first = hp;
     if( e.second > 1 && now_ms - e.second < 260 ) {
@@ -3374,6 +3829,14 @@ void voxel_renderer::upload_lights( GLuint program )
     gl.glUniform1f( gl.glGetUniformLocation( program, "u_time" ),
                     static_cast<float>( now_ms % 1000000 ) / 1000.0f );
     gl.glUniform1f( gl.glGetUniformLocation( program, "u_shadow_texel" ), 1.0f / shadow_size );
+    gl.glActiveTexture( GL_TEXTURE2 );
+    gl.glBindTexture( GL_TEXTURE_2D, occ_tex );
+    gl.glActiveTexture( GL_TEXTURE0 );
+    gl.glUniform1i( gl.glGetUniformLocation( program, "u_occ" ), 2 );
+    gl.glUniform1i( gl.glGetUniformLocation( program, "u_occ_enabled" ),
+                    occ_tex != 0 && get_option<bool>( "VOXEL_LIGHT_SHADOWS" ) ? 1 : 0 );
+    gl.glUniform1f( gl.glGetUniformLocation( program, "u_occ_floor" ), occ_floor_z * level_height );
+    gl.glUniform1f( gl.glGetUniformLocation( program, "u_occ_size" ), static_cast<float>( MAPSIZE_X ) );
 }
 
 void voxel_renderer::apply_quality()
@@ -3394,6 +3857,8 @@ void voxel_renderer::apply_quality()
         target_w = 0;
     }
     if( !cam.initialized ) {
+        const std::string mode = get_option<std::string>( "VOXEL_CAMERA_MODE" );
+        cam.mode = mode == "shoulder" ? 1 : mode == "first_person" ? 2 : 0;
         cam.pitch = static_cast<float>( get_option<int>( "VOXEL_CAMERA_ANGLE" ) ) * pi / 180.0f;
         cam.initialized = true;
     }
@@ -3484,11 +3949,32 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     }
     light_pos = sorted_pos;
     light_col = sorted_col;
-    const vec3 offset = { std::sin( cam.yaw ) * std::cos( cam.pitch ), std::sin( cam.pitch ), std::cos( cam.yaw ) * std::cos( cam.pitch ) };
-    const vec3 eye = focus + offset * distance;
-    const mat4 proj = perspective( 0.7f, static_cast<float>( width ) / static_cast<float>( height ), 0.5f,
-                                   distance * 4.0f + 80.0f );
-    const mat4 view = look_at( eye, focus, { 0.0f, 1.0f, 0.0f } );
+    float view_pitch = cam.pitch;
+    float view_distance = distance;
+    float fov = 0.7f;
+    float znear = 0.5f;
+    const bool follow = avatar_display && center == get_avatar().pos_bub();
+    if( cam.mode == 1 && follow ) {
+        focus.y = avatar_display->y * level_height + 1.2f;
+        view_pitch = std::clamp( cam.pitch * 0.45f, 0.12f, 0.7f );
+        view_distance = 3.8f;
+        fov = 0.9f;
+        znear = 0.2f;
+    }
+    const vec3 offset = { std::sin( cam.yaw ) * std::cos( view_pitch ), std::sin( view_pitch ), std::cos( cam.yaw ) * std::cos( view_pitch ) };
+    vec3 eye = focus + offset * view_distance;
+    vec3 look = focus;
+    if( cam.mode == 2 && follow ) {
+        eye = vec3{ avatar_display->x + 0.5f, avatar_display->y * level_height + 1.45f, avatar_display->z + 0.5f };
+        const float q = std::clamp( ( cam.pitch - 0.95f ) * 0.8f + 0.2f, -0.6f, 0.9f );
+        look = eye + vec3{ -std::sin( cam.yaw ) * std::cos( q ), -std::sin( q ), -std::cos( cam.yaw ) * std::cos( q ) };
+        fov = 1.2f;
+        znear = 0.05f;
+    }
+    const float zfar = distance * 4.0f + 80.0f;
+    const mat4 proj = perspective( fov, static_cast<float>( width ) / static_cast<float>( height ), znear,
+                                   zfar );
+    const mat4 view = look_at( eye, look, { 0.0f, 1.0f, 0.0f } );
     const mat4 view_proj = proj * view;
     mat4 flip = mat4::identity();
     flip.m[5] = -1.0f;
@@ -3584,8 +4070,32 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
 
     gl.glBindFramebuffer( GL_READ_FRAMEBUFFER, msaa_fbo );
     gl.glBindFramebuffer( GL_DRAW_FRAMEBUFFER, resolve_fbo );
-    gl.glBlitFramebuffer( 0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST );
-    gl.glBindFramebuffer( GL_FRAMEBUFFER, resolve_fbo );
+    const bool ssao = get_option<bool>( "VOXEL_SSAO" );
+    gl.glBlitFramebuffer( 0, 0, width, height, 0, 0, width, height,
+                          ssao ? GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT : GL_COLOR_BUFFER_BIT, GL_NEAREST );
+    if( ssao ) {
+        gl.glBindFramebuffer( GL_FRAMEBUFFER, post_fbo );
+        gl.glViewport( 0, 0, width, height );
+        gl.glDisable( GL_DEPTH_TEST );
+        gl.glDisable( GL_CULL_FACE );
+        gl.glDisable( GL_BLEND );
+        gl.glUseProgram( ssao_program );
+        gl.glActiveTexture( GL_TEXTURE0 );
+        gl.glBindTexture( GL_TEXTURE_2D, resolve_color );
+        gl.glActiveTexture( GL_TEXTURE1 );
+        gl.glBindTexture( GL_TEXTURE_2D, resolve_depth );
+        gl.glUniform1i( gl.glGetUniformLocation( ssao_program, "u_color" ), 0 );
+        gl.glUniform1i( gl.glGetUniformLocation( ssao_program, "u_depth" ), 1 );
+        gl.glUniform2f( gl.glGetUniformLocation( ssao_program, "u_texel" ), 1.0f / width, 1.0f / height );
+        gl.glUniform1f( gl.glGetUniformLocation( ssao_program, "u_near" ), znear );
+        gl.glUniform1f( gl.glGetUniformLocation( ssao_program, "u_far" ), zfar );
+        gl.glBindVertexArray( empty_vao );
+        gl.glDrawArraysInstanced( GL_TRIANGLES, 0, 3, 1 );
+        gl.glBindVertexArray( 0 );
+        gl.glActiveTexture( GL_TEXTURE0 );
+        gl.glEnable( GL_DEPTH_TEST );
+    }
+    gl.glBindFramebuffer( GL_FRAMEBUFFER, ssao ? post_fbo : resolve_fbo );
     gl.glReadBuffer( GL_COLOR_ATTACHMENT0 );
     pixels.resize( static_cast<size_t>( width ) * height * 4 );
     gl.glPixelStorei( GL_PACK_ALIGNMENT, 1 );
@@ -3692,6 +4202,31 @@ void orbit( float dx, float dy )
     cam.pitch = std::clamp( cam.pitch + dy * 0.006f, 0.35f, 1.5f );
 }
 
+void cycle_camera_mode()
+{
+    cam.mode = ( cam.mode + 1 ) % 3;
+}
+
+void set_hover( const point &pixel, const point &size )
+{
+    cam.hover_pixel = pixel;
+    cam.hover_size = size;
+    cam.hover_set = true;
+}
+
+bool hover_changed( const point &pixel, const point &size )
+{
+    const std::optional<tripoint_bub_ms> h = pick( pixel, size );
+    cam.hover_pixel = pixel;
+    cam.hover_size = size;
+    cam.hover_set = true;
+    if( h != cam.hover ) {
+        cam.hover = h;
+        return true;
+    }
+    return false;
+}
+
 void rotate_step( int steps )
 {
     const float quarter = pi / 4.0f;
@@ -3776,6 +4311,10 @@ std::optional<tripoint_bub_ms> pick( const point &pixel, const point &size )
         if( !here.inbounds( tp ) ) {
             continue;
         }
+        const Creature *critter = get_creature_tracker().creature_at( tp, true );
+        if( critter && get_avatar().sees( here, *critter ) && pt.y <= plane + 1.6f ) {
+            return tp;
+        }
         const ter_t &ter = here.ter( tp ).obj();
         const bool tall = ter.has_flag( ter_furn_flag::TFLAG_WALL ) ||
                           ter.has_flag( ter_furn_flag::TFLAG_DOOR ) || ter.has_flag( ter_furn_flag::TFLAG_WINDOW );
@@ -3840,6 +4379,19 @@ void orbit( float, float )
 
 void rotate_step( int )
 {
+}
+
+void cycle_camera_mode()
+{
+}
+
+void set_hover( const point &, const point & )
+{
+}
+
+bool hover_changed( const point &, const point & )
+{
+    return false;
 }
 
 void tilt_step( int )
