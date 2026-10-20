@@ -34,6 +34,7 @@ void orbit( float dx, float dy );
 void rotate_step( int steps );
 void tilt_step( int steps );
 void reset_camera();
+float camera_yaw_degrees();
 void cycle_camera_mode();
 void set_hover( const point &pixel, const point &size );
 bool hover_changed( const point &pixel, const point &size );

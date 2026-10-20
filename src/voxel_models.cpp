@@ -1543,6 +1543,34 @@ voxel_grid make_marker( const vm_key &k )
     return g;
 }
 
+voxel_grid make_omt_ground( const vm_key &k, uint32_t seed )
+{
+    voxel_grid g( 8, 1, 8 );
+    for( int z = 0; z < 8; ++z ) {
+        for( int x = 0; x < 8; ++x ) {
+            g.set( x, 0, z, voxel_shade( k.color, nz( x, 0, z, seed, 0.06f ) ) );
+        }
+    }
+    return g;
+}
+
+voxel_grid make_omt_block( const vm_key &k, uint32_t seed )
+{
+    const int h = k.param == 0 ? 3 : 6;
+    voxel_grid g( 8, h + 1, 8 );
+    g.box( 1, 0, 1, 7, h, 7, k.color, 0.05f, seed );
+    for( int y = 1; y < h; y += 2 ) {
+        for( int i = 2; i < 6; i += 2 ) {
+            g.set( i, y, 1, rgb( 120, 150, 170 ) );
+            g.set( i, y, 6, rgb( 120, 150, 170 ) );
+            g.set( 1, y, i, rgb( 120, 150, 170 ) );
+            g.set( 6, y, i, rgb( 120, 150, 170 ) );
+        }
+    }
+    g.box( 1, h, 1, 7, h + 1, 7, k.color2, 0.04f, seed + 1 );
+    return g;
+}
+
 voxel_grid make_small_cube( const vm_key &k )
 {
     voxel_grid g( 8, 2, 8 );
@@ -1628,7 +1656,7 @@ const char *vm_kind_name( vm_kind kind )
             "cloud", "cursor", "machine", "pole", "stack", "mound", "mat", "panel", "pillar", "stump",
             "ramp", "grave", "anvil", "hedge", "trap", "vehicle", "item_gun", "item_blade", "item_tool",
             "item_clothing", "item_food", "item_bottle", "item_book", "item_ammo", "item_corpse", "held",
-            "rain", "snow", "bolt", "marker", "particle", "spark"
+            "rain", "snow", "bolt", "marker", "particle", "spark", "omt_ground", "omt_block"
         }
     };
     return names[static_cast<int>( kind )];
@@ -1849,6 +1877,10 @@ voxel_grid make_whole_model( const vm_key &raw )
         case vm_kind::particle:
         case vm_kind::spark:
             return make_small_cube( k );
+        case vm_kind::omt_ground:
+            return make_omt_ground( k, seed );
+        case vm_kind::omt_block:
+            return make_omt_block( k, seed );
     }
     return make_furniture( k, seed );
 }

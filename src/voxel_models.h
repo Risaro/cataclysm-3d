@@ -92,7 +92,9 @@ enum class vm_kind : uint8_t {
     bolt,
     marker,
     particle,
-    spark
+    spark,
+    omt_ground,
+    omt_block
 };
 
 enum vm_vehicle_bits : uint8_t {
@@ -148,7 +150,7 @@ struct vm_key {
 bool vm_is_emissive( vm_kind kind );
 const char *vm_kind_name( vm_kind kind );
 const char *vm_material_name( vm_material material );
-constexpr int vm_kind_count = static_cast<int>( vm_kind::spark ) + 1;
+constexpr int vm_kind_count = static_cast<int>( vm_kind::omt_block ) + 1;
 
 enum vm_part : uint8_t {
     vmp_whole = 0,

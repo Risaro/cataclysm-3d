@@ -35,6 +35,9 @@
 #include "monster.h"
 #include "mtype.h"
 #include "npc.h"
+#include "omdata.h"
+#include "overmap.h"
+#include "overmapbuffer.h"
 #include "options.h"
 #include "sdl_utils.h"
 #include "trap.h"
@@ -1590,6 +1593,13 @@ class voxel_renderer
         GLuint post_fbo = 0;
         GLuint post_color = 0;
         GLuint ssao_program = 0;
+        GLuint sky_program = 0;
+        float wind_x = 0.0f;
+        float wind_z = 0.0f;
+        std::vector<uint8_t> room_mask;
+        bool room_active = false;
+        void build_room( const tripoint_bub_ms &start );
+        void add_distant_terrain( const tripoint_bub_ms &you_pos, float daylight );
         GLuint empty_vao = 0;
         bool hurt_now( const Creature &c ) const;
         vec3 lunge_offset( const void *id );
@@ -1624,6 +1634,7 @@ layout( location = 6 ) in vec4 i_anim;
 uniform mat4 u_vp;
 uniform mat4 u_light_vp;
 uniform float u_time;
+uniform vec2 u_wind;
 out vec3 v_color;
 out vec3 v_normal;
 out vec3 v_world;
@@ -1648,9 +1659,13 @@ void main()
     vec3 p = ( lp - vec3( 0.5, 0.0, 0.5 ) ) * i_extra.x;
     p = vec3( c * p.x - s * p.z, p.y, s * p.x + c * p.z ) + vec3( 0.5, 0.0, 0.5 );
     vec3 world = p + i_pos.xyz;
-    v_wave = i_extra.w;
-    if( i_extra.w > 0.5 ) {
+    v_wave = i_extra.w > 0.5 && i_extra.w < 1.5 ? 1.0 : 0.0;
+    if( v_wave > 0.5 ) {
         world.y += sin( u_time * 1.6 + world.x * 1.1 + world.z * 0.8 ) * 0.035;
+    }
+    if( i_extra.w > 1.5 ) {
+        float gust = 0.6 + 0.4 * sin( u_time * 2.3 + world.x * 0.9 + world.z * 0.7 );
+        world.xz += u_wind * gust * lp.y * lp.y * 0.05;
     }
     v_normal = vec3( c * ln.x - s * ln.z, ln.y, s * ln.x + c * ln.z );
     v_color = a_color.rgb * i_tint.rgb * a_color.a;
@@ -1846,6 +1861,66 @@ void main()
     }
     float ao = 1.0 - 0.55 * occlusion / float( samples );
     frag = vec4( base.rgb * ao, base.a );
+}
+)";
+
+const char *sky_fs = R"(#version 330 core
+in vec2 v_uv;
+uniform mat4 u_inv_vp;
+uniform vec3 u_eye;
+uniform vec3 u_sun;
+uniform vec3 u_horizon;
+uniform vec3 u_zenith;
+uniform float u_daylight;
+uniform float u_cloud_cover;
+uniform vec2 u_cloud_offset;
+out vec4 frag;
+float hash( vec2 p )
+{
+    return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 );
+}
+float noise( vec2 p )
+{
+    vec2 i = floor( p );
+    vec2 f = fract( p );
+    f = f * f * ( 3.0 - 2.0 * f );
+    return mix( mix( hash( i ), hash( i + vec2( 1.0, 0.0 ) ), f.x ),
+                mix( hash( i + vec2( 0.0, 1.0 ) ), hash( i + vec2( 1.0, 1.0 ) ), f.x ), f.y );
+}
+float fbm( vec2 p )
+{
+    float v = 0.0;
+    float a = 0.5;
+    for( int i = 0; i < 5; ++i ) {
+        v += a * noise( p );
+        p *= 2.03;
+        a *= 0.5;
+    }
+    return v;
+}
+void main()
+{
+    vec4 w = u_inv_vp * vec4( v_uv * 2.0 - 1.0, 1.0, 1.0 );
+    vec3 dir = normalize( w.xyz / w.w - u_eye );
+    float up = max( dir.y, 0.0 );
+    vec3 col = dir.y < 0.0 ? u_horizon : mix( u_horizon, u_zenith, pow( up, 0.6 ) );
+    vec3 sun = normalize( u_sun );
+    float sd = dot( dir, sun );
+    col += vec3( 1.0, 0.85, 0.6 ) * pow( max( sd, 0.0 ), 48.0 ) * 0.5 * u_daylight;
+    col = mix( col, vec3( 1.0, 0.97, 0.88 ), smoothstep( 0.9990, 0.9995, sd ) * u_daylight );
+    float night = 1.0 - smoothstep( 0.0, 0.3, u_daylight );
+    float md = dot( dir, -sun );
+    col = mix( col, vec3( 0.86, 0.88, 0.93 ), smoothstep( 0.9993, 0.9996, md ) * night );
+    vec2 sp = floor( dir.xz / max( dir.y, 0.05 ) * 220.0 );
+    col += vec3( step( 0.9975, hash( sp ) ) * night * smoothstep( 0.05, 0.3, up ) );
+    if( dir.y > 0.01 ) {
+        vec2 cp = dir.xz / dir.y * 0.6 + u_cloud_offset;
+        float c = fbm( cp * 1.5 );
+        float cover = smoothstep( 1.0 - u_cloud_cover, 1.25 - u_cloud_cover, c );
+        vec3 cloud = mix( vec3( 0.22, 0.24, 0.29 ), vec3( 0.97 ), max( u_daylight, 0.06 ) );
+        col = mix( col, cloud, cover * smoothstep( 0.01, 0.2, dir.y ) * 0.9 );
+    }
+    frag = vec4( col, 1.0 );
 }
 )";
 
@@ -2137,8 +2212,9 @@ bool voxel_renderer::init_sprites()
     sprite_program = compile( sprite_vs, sprite_fs );
     sprite_shadow_program = compile( sprite_vs, sprite_shadow_fs );
     ssao_program = compile( ssao_vs, ssao_fs );
+    sky_program = compile( ssao_vs, sky_fs );
     gl.glGenVertexArrays( 1, &empty_vao );
-    if( !sprite_program || !sprite_shadow_program || !ssao_program ) {
+    if( !sprite_program || !sprite_shadow_program || !ssao_program || !sky_program ) {
         return false;
     }
     gl.glGenBuffers( 1, &sprite_vbo );
@@ -2699,7 +2775,13 @@ void voxel_renderer::add_at( instance_lists &lists, const vm_key &key, const vec
     inst.scale = scale;
     inst.emissive = models[m].emissive ? 1.0f : 0.0f;
     inst.desat = desat;
-    inst.pad = key.kind == vm_kind::water ? 1.0f : 0.0f;
+    const bool sway = key.kind == vm_kind::tree || key.kind == vm_kind::pine ||
+                      key.kind == vm_kind::dead_tree || key.kind == vm_kind::young_tree || key.kind == vm_kind::shrub ||
+                      key.kind == vm_kind::tall_grass || key.kind == vm_kind::flower || key.kind == vm_kind::hedge;
+    inst.pad = key.kind == vm_kind::water ? 1.0f : sway ? 2.0f : 0.0f;
+    if( sway && wind_x * wind_x + wind_z * wind_z > 0.01f ) {
+        ambient = true;
+    }
     inst.pivot_y = next_anim[0];
     inst.pivot_z = next_anim[1];
     inst.swing = next_anim[2];
@@ -2858,6 +2940,12 @@ bool voxel_renderer::cut_here( const tripoint_bub_ms &p ) const
     const float cz = std::cos( cam.yaw );
     const float along = dx * cx + dz * cz;
     const float lateral = std::fabs( dx * cz - dz * cx );
+    if( room_active && p.x() >= 0 && p.y() >= 0 && p.x() < MAPSIZE_X && p.y() < MAPSIZE_Y ) {
+        const uint8_t r = room_mask[static_cast<size_t>( p.y() ) * MAPSIZE_X + p.x()];
+        if( ( r == 1 && along > 0.0f ) || ( r == 2 && along > -0.5f ) ) {
+            return true;
+        }
+    }
     const float reach = 3.0f + 9.0f * std::cos( cam.pitch );
     return along > 0.3f && along < reach && lateral < 1.6f + along * 0.45f;
 }
@@ -2898,6 +2986,16 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     const visibility_variables &cache = here.get_visibility_variables_cache();
     sync_voxelset();
     cutaway = get_option<bool>( "VOXEL_CUTAWAY" ) && cam.mode != 2;
+    if( get_option<bool>( "VOXEL_WIND" ) && center.z() >= 0 ) {
+        const weather_manager &weather = get_weather();
+        const float from = static_cast<float>( weather.winddirection ) * pi / 180.0f;
+        const float strength = std::clamp( static_cast<float>( weather.windspeed ) / 25.0f, 0.0f, 1.5f );
+        wind_x = -std::sin( from ) * strength;
+        wind_z = std::cos( from ) * strength;
+    } else {
+        wind_x = 0.0f;
+        wind_z = 0.0f;
+    }
     night = daylight < 0.25f;
     cut_center = get_avatar().pos_bub( get_map() );
     sprite_style = get_option<std::string>( "VOXEL_STYLE" ) == "sprites";
@@ -2928,8 +3026,8 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     const int y0 = std::max( 0, center.y() - radius );
     const int y1 = std::min( MAPSIZE_Y - 1, center.y() + radius );
     const int min_z = std::max( -OVERMAP_DEPTH, center.z() - 3 );
-    const float memory_light = 0.42f;
-    const float memory_desat = 0.75f;
+    const float memory_light = 0.58f;
+    const float memory_desat = 0.45f;
     const int columns_w = x1 - x0 + 1;
     std::vector<bool> known_column( static_cast<size_t>( columns_w ) * ( y1 - y0 + 1 ), false );
 
@@ -2948,6 +3046,10 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     } else {
         fire_tiles.clear();
         occ_data.assign( static_cast<size_t>( MAPSIZE_X ) * MAPSIZE_Y, 0 );
+        room_active = cutaway && !here.is_outside( you_pos );
+        if( room_active ) {
+            build_room( you_pos );
+        }
         for( int y = y0; y <= y1; ++y ) {
             for( int x = x0; x <= x1; ++x ) {
                 for( int z = center.z(); z >= min_z; --z ) {
@@ -3252,7 +3354,8 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
             }
             drawing_shadow = false;
         }
-        if( get_option<bool>( "VOXEL_UPPER_FLOORS" ) && here.is_outside( you_pos ) ) {
+        const bool first_person = cam.mode == 2;
+        if( ( get_option<bool>( "VOXEL_UPPER_FLOORS" ) && here.is_outside( you_pos ) ) || first_person ) {
             const float cx = std::sin( cam.yaw );
             const float cz = std::cos( cam.yaw );
             for( int up = 1; up <= 2; ++up ) {
@@ -3267,12 +3370,12 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                         }
                         const float dx = static_cast<float>( x - you_pos.x() );
                         const float dy = static_cast<float>( y - you_pos.y() );
-                        if( dx * dx + dy * dy < 20.0f ) {
+                        if( !first_person && dx * dx + dy * dy < 20.0f ) {
                             continue;
                         }
                         const float along = dx * cx + dy * cz;
                         const float lateral = std::fabs( dx * cz - dy * cx );
-                        if( along > 0.0f && along < 16.0f && lateral < 2.5f + along * 0.5f ) {
+                        if( !first_person && along > 0.0f && along < 16.0f && lateral < 2.5f + along * 0.5f ) {
                             continue;
                         }
                         const tripoint_bub_ms p( x, y, z );
@@ -3288,6 +3391,9 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                     }
                 }
             }
+        }
+        if( get_option<bool>( "VOXEL_DISTANT_TERRAIN" ) && center.z() >= 0 ) {
+            add_distant_terrain( you_pos, daylight );
         }
         occ_floor_z = center.z();
         upload_occupancy();
@@ -3653,6 +3759,122 @@ void voxel_renderer::upload_occupancy()
                      occ_data.data() );
 }
 
+void voxel_renderer::build_room( const tripoint_bub_ms &start )
+{
+    map &here = get_map();
+    room_mask.assign( static_cast<size_t>( MAPSIZE_X ) * MAPSIZE_Y, 0 );
+    std::vector<point> queue;
+    const auto idx = []( int x, int y ) {
+        return static_cast<size_t>( y ) * MAPSIZE_X + x;
+    };
+    queue.emplace_back( start.x(), start.y() );
+    room_mask[idx( start.x(), start.y() )] = 1;
+    for( size_t head = 0; head < queue.size() && queue.size() < 900; ++head ) {
+        const point c = queue[head];
+        for( const point &d : { point::north, point::south, point::east, point::west } ) {
+            const point n = c + d;
+            if( n.x < 0 || n.y < 0 || n.x >= MAPSIZE_X || n.y >= MAPSIZE_Y ||
+                std::abs( n.x - start.x() ) > 16 || std::abs( n.y - start.y() ) > 16 ) {
+                continue;
+            }
+            uint8_t &m = room_mask[idx( n.x, n.y )];
+            if( m != 0 ) {
+                continue;
+            }
+            const tripoint_bub_ms np( n.x, n.y, start.z() );
+            const tile_style &ts = terrain_style( here.ter( np ) );
+            if( ts.wall_like ) {
+                m = 2;
+                continue;
+            }
+            m = 1;
+            queue.push_back( n );
+        }
+    }
+}
+
+void voxel_renderer::add_distant_terrain( const tripoint_bub_ms &you_pos, float daylight )
+{
+    map &here = get_map();
+    const tripoint_abs_ms origin = here.get_abs( tripoint_bub_ms( 0, 0, 0 ) );
+    const tripoint_abs_omt you_omt = coords::project_to<coords::omt>( here.get_abs( you_pos ) );
+    const float light = 0.55f + 0.45f * daylight;
+    constexpr int reach = 4;
+    constexpr int omt_size = 24;
+    for( int dy = -reach; dy <= reach; ++dy ) {
+        for( int dx = -reach; dx <= reach; ++dx ) {
+            const tripoint_abs_omt omt( you_omt.x() + dx, you_omt.y() + dy, 0 );
+            if( overmap_buffer.seen( omt ) == om_vision_level::unseen ) {
+                continue;
+            }
+            const tripoint_abs_ms corner = coords::project_to<coords::ms>( omt );
+            const int bx = corner.x() - origin.x();
+            const int by = corner.y() - origin.y();
+            const bool inside = bx + omt_size > 0 && by + omt_size > 0 && bx < MAPSIZE_X && by < MAPSIZE_Y;
+            if( inside ) {
+                continue;
+            }
+            const std::string id = overmap_buffer.ter( omt ).id().str();
+            if( id == "open_air" || id.empty() ) {
+                continue;
+            }
+            const uint32_t h = voxel_hash( omt.x(), omt.y(), 0, 99 );
+            vm_key ground;
+            ground.kind = vm_kind::omt_ground;
+            bool forest = false;
+            bool building = false;
+            if( has_any( id, "forest", "swamp" ) ) {
+                ground.color = rgb( 58, 96, 46 );
+                forest = true;
+            } else if( has_any( id, "river", "lake", "water", "ocean", "pond" ) ) {
+                ground.color = rgb( 52, 96, 150 );
+            } else if( has_any( id, "road", "highway", "hiway", "bridge", "parking" ) ) {
+                ground.color = rgb( 66, 66, 70 );
+            } else if( has_any( id, "field", "farm", "meadow", "grass" ) ) {
+                ground.color = rgb( 104, 146, 66 );
+            } else if( has_any( id, "beach", "sand", "desert" ) ) {
+                ground.color = rgb( 205, 185, 130 );
+            } else {
+                ground.color = rgb( 118, 128, 108 );
+                building = true;
+            }
+            const vec3 center_pos{ bx + omt_size * 0.5f - 0.5f, 0.0f, by + omt_size * 0.5f - 0.5f };
+            add_at( main_lists, ground, center_pos, -static_cast<float>( omt_size ) * voxel_size - 0.06f, 0.0f,
+                    light, 0.0f, static_cast<float>( omt_size ) );
+            if( forest ) {
+                for( int i = 0; i < 9; ++i ) {
+                    vm_key tree;
+                    tree.kind = voxel_hash( i, 3, 0, h ) % 3 == 0 ? vm_kind::pine : vm_kind::tree;
+                    tree.color = tree.kind == vm_kind::pine ? rgb( 38, 88, 50 ) : rgb( 70, 122, 46 );
+                    tree.color2 = rgb( 92, 68, 48 );
+                    tree.variant = static_cast<uint8_t>( voxel_hash( i, 4, 0, h ) % 6 );
+                    const vec3 tp{ bx + 2.0f + static_cast<float>( voxel_hash( i, 1, 0, h ) % 20 ), 0.0f,
+                                   by + 2.0f + static_cast<float>( voxel_hash( i, 2, 0, h ) % 20 ) };
+                    add_at( main_lists, tree, tp, 0.0f, static_cast<float>( i ), light, 0.0f, 1.6f );
+                }
+            } else if( building ) {
+                vm_key block;
+                block.kind = vm_kind::omt_block;
+                const bool tall = has_any( id, "apartment", "office", "hospital", "mall", "factory", "hotel",
+                                           "tower", "prison", "lab", "school" );
+                block.param = tall ? 1 : 0;
+                static const std::array<voxel_rgb, 5> walls = { {
+                        rgb( 170, 160, 145 ), rgb( 150, 80, 65 ), rgb( 185, 185, 180 ), rgb( 130, 120, 110 ),
+                        rgb( 200, 190, 160 )
+                    }
+                };
+                static const std::array<voxel_rgb, 4> roofs = { {
+                        rgb( 110, 60, 50 ), rgb( 80, 80, 86 ), rgb( 120, 110, 95 ), rgb( 60, 62, 66 )
+                    }
+                };
+                block.color = walls[h % walls.size()];
+                block.color2 = roofs[( h >> 4 ) % roofs.size()];
+                add_at( main_lists, block, center_pos, 0.0f, 0.0f, light, 0.0f, tall ? 20.0f : 14.0f );
+            }
+        }
+    }
+}
+
 bool voxel_renderer::door_animation( const tile_style &st, const tripoint_bub_ms &p, const vm_key &k,
                                      float light, float desat )
 {
@@ -3829,6 +4051,7 @@ void voxel_renderer::upload_lights( GLuint program )
     gl.glUniform1f( gl.glGetUniformLocation( program, "u_time" ),
                     static_cast<float>( now_ms % 1000000 ) / 1000.0f );
     gl.glUniform1f( gl.glGetUniformLocation( program, "u_shadow_texel" ), 1.0f / shadow_size );
+    gl.glUniform2f( gl.glGetUniformLocation( program, "u_wind" ), wind_x, wind_z );
     gl.glActiveTexture( GL_TEXTURE2 );
     gl.glBindTexture( GL_TEXTURE_2D, occ_tex );
     gl.glActiveTexture( GL_TEXTURE0 );
@@ -3975,7 +4198,7 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
         fov = 2.0f * std::atan( std::tan( hfov * 0.5f ) / aspect );
         znear = 0.05f;
     }
-    const float zfar = distance * 4.0f + 80.0f;
+    const float zfar = distance * 4.0f + 80.0f + ( get_option<bool>( "VOXEL_DISTANT_TERRAIN" ) ? 160.0f : 0.0f );
     const mat4 proj = perspective( fov, static_cast<float>( width ) / static_cast<float>( height ), znear,
                                    zfar );
     const mat4 view = look_at( eye, look, { 0.0f, 1.0f, 0.0f } );
@@ -4024,6 +4247,9 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     const float dusk = std::clamp( 1.0f - std::fabs( daylight - 0.35f ) / 0.35f, 0.0f, 1.0f );
     sky = sky * ( 1.0f - 0.45f * dusk ) + vec3{ 0.8f, 0.45f, 0.32f } * ( 0.45f * dusk );
     float fog_far = static_cast<float>( radius );
+    if( get_option<bool>( "VOXEL_DISTANT_TERRAIN" ) && center.z() >= 0 ) {
+        fog_far += 90.0f;
+    }
     if( has_any( weather_id, "fog", "mist", "haze" ) ) {
         sky = sky * 0.4f + vec3{ 0.55f, 0.58f, 0.6f } * ( 0.6f * std::max( daylight, 0.25f ) );
         fog_far *= 0.4f;
@@ -4039,6 +4265,42 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     const vec3 fog = center.z() < 0 ? vec3{ 0.0f, 0.0f, 0.0f } : sky;
     gl.glClearColor( fog.x, fog.y, fog.z, 1.0f );
     gl.glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+    if( center.z() >= 0 && get_option<bool>( "VOXEL_SKY" ) ) {
+        mat4 inv_vp;
+        if( invert( flipped, inv_vp ) ) {
+            gl.glDisable( GL_DEPTH_TEST );
+            gl.glDepthMask( GL_FALSE );
+            gl.glDisable( GL_CULL_FACE );
+            gl.glUseProgram( sky_program );
+            const auto loc = [&gl, this]( const char *name ) {
+                return gl.glGetUniformLocation( sky_program, name );
+            };
+            gl.glUniformMatrix4fv( loc( "u_inv_vp" ), 1, GL_FALSE, inv_vp.m.data() );
+            gl.glUniform3f( loc( "u_eye" ), eye.x, eye.y, eye.z );
+            gl.glUniform3f( loc( "u_sun" ), sun_dir.x, sun_dir.y, sun_dir.z );
+            gl.glUniform3f( loc( "u_horizon" ), fog.x, fog.y, fog.z );
+            const vec3 zenith = fog * 0.7f + vec3{ 0.05f, 0.12f, 0.3f } * daylight;
+            gl.glUniform3f( loc( "u_zenith" ), zenith.x, zenith.y, zenith.z );
+            gl.glUniform1f( loc( "u_daylight" ), daylight );
+            float cover = 0.3f;
+            if( has_any( weather_id, "rain", "storm", "drizzle", "thunder", "lightning", "snow" ) ) {
+                cover = 0.85f;
+            } else if( has_any( weather_id, "cloud", "fog", "mist", "haze", "flurries" ) ) {
+                cover = 0.6f;
+            } else if( has( weather_id, "clear" ) ) {
+                cover = 0.12f;
+            }
+            gl.glUniform1f( loc( "u_cloud_cover" ), cover );
+            const float tsec = static_cast<float>( now_ms % 10000000 ) / 1000.0f;
+            gl.glUniform2f( loc( "u_cloud_offset" ), tsec * ( 0.004f + wind_x * 0.01f ), tsec * ( 0.002f + wind_z * 0.01f ) );
+            gl.glBindVertexArray( empty_vao );
+            gl.glDrawArraysInstanced( GL_TRIANGLES, 0, 3, 1 );
+            gl.glBindVertexArray( 0 );
+            gl.glDepthMask( GL_TRUE );
+            gl.glEnable( GL_DEPTH_TEST );
+            gl.glEnable( GL_CULL_FACE );
+        }
+    }
     gl.glFrontFace( GL_CW );
 
     gl.glUseProgram( main_program );
@@ -4209,6 +4471,11 @@ void orbit( float dx, float dy )
 void cycle_camera_mode()
 {
     cam.mode = ( cam.mode + 1 ) % 3;
+}
+
+float camera_yaw_degrees()
+{
+    return active() ? cam.yaw * 180.0f / pi : 0.0f;
 }
 
 void set_hover( const point &pixel, const point &size )
@@ -4387,6 +4654,11 @@ void rotate_step( int )
 
 void cycle_camera_mode()
 {
+}
+
+float camera_yaw_degrees()
+{
+    return 0.0f;
 }
 
 void set_hover( const point &, const point & )

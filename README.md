@@ -39,7 +39,11 @@ Graphics: sun shadows, colored light from fires, flashlights and vehicle lights 
 ambient occlusion, animated water and fire with smoke and sparks, glowing windows at night, weather
 skies and fog, upper floors of buildings while you are outdoors. Creatures walk with swinging limbs,
 lunge when they attack, spray blood when hit and sink down when they die; doors swing open.
-Camera modes: orbit, over the shoulder and first person (Alt+C). The tile under the mouse is
+A sky with the sun, moon, stars and weather clouds, plants swaying with the real wind, and
+explored land beyond the loaded map drawn from the overmap. Inside buildings the walls of the
+whole room facing the camera are cut away; the first person camera keeps ceilings and full walls.
+Sound directions follow the camera.
+Camera modes: orbit, over the shoulder and first person (Alt+C) with an adjustable field of view. The tile under the mouse is
 highlighted and creatures can be clicked directly. Options live in Settings, Graphics, Tileset options: view style, voxel tileset, shadows and
 their quality, antialiasing, ambient occlusion, light shadows, particles, limb animation, draw
 distance, camera mode and angle, cutaway, upper floors and ambient animation.

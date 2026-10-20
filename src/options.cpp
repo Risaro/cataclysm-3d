@@ -2676,6 +2676,27 @@ void options_manager::add_options_graphics()
 
         get_option( "VOXEL_LIMB_ANIMATION" ).setPrerequisite( "VOXEL_VIEW" );
 
+        add( "VOXEL_SKY", page_id, to_translation( "3D sky" ),
+             to_translation( "If true, the 3D view draws a sky with the sun, the moon, stars and clouds that follow the weather." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_SKY" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_WIND", page_id, to_translation( "3D wind" ),
+             to_translation( "If true, trees, bushes and grass sway with the wind." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_WIND" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_DISTANT_TERRAIN", page_id, to_translation( "3D distant terrain" ),
+             to_translation( "If true, explored land beyond the loaded map is drawn in a simplified form from the overmap." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_DISTANT_TERRAIN" ).setPrerequisite( "VOXEL_VIEW" );
+
         std::vector<id_and_option> voxelsets = { { "builtin", to_translation( "Built-in procedural models" ) } };
         for( const std::pair<std::string, std::string> &vs : list_voxelsets() ) {
             voxelsets.emplace_back( vs.first, no_translation( vs.second ) );

@@ -46,6 +46,7 @@
 #include "vpart_position.h"
 #include "weather.h"
 #include "weather_type.h"
+#include "voxel_view.h"
 
 #if defined(SDL_SOUND)
 #   include "sound_backend.h"
@@ -2105,7 +2106,8 @@ int sfx::get_heard_volume( const tripoint_bub_ms &source )
 
 units::angle sfx::get_heard_angle( const tripoint_bub_ms &source )
 {
-    units::angle angle = coord_to_angle( get_player_character().pos_bub(), source ) + 90_degrees;
+    units::angle angle = coord_to_angle( get_player_character().pos_bub(), source ) + 90_degrees +
+                         units::from_degrees( voxel_view::camera_yaw_degrees() );
     //add_msg(m_warning, "angle: %i", angle);
     return angle;
 }

@@ -131,6 +131,8 @@
     { "builtin": "bolt", "file": "builtin/bolt.vox", "emissive": true },
     { "builtin": "marker", "file": "builtin/marker.vox", "emissive": true },
     { "builtin": "particle", "file": "builtin/particle.vox" },
-    { "builtin": "spark", "file": "builtin/spark.vox", "emissive": true }
+    { "builtin": "spark", "file": "builtin/spark.vox", "emissive": true },
+    { "builtin": "omt_ground", "file": "builtin/omt_ground.vox" },
+    { "builtin": "omt_block", "file": "builtin/omt_block.vox" }
   ]
 }
