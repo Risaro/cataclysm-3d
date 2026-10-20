@@ -441,7 +441,8 @@ tile_style classify_terrain( const ter_t &t )
     st.color = base;
     st.color2 = rgb( 95, 70, 50 );
 
-    if( t.has_flag( ter_furn_flag::TFLAG_NO_FLOOR ) && !t.has_flag( ter_furn_flag::TFLAG_WALL ) ) {
+    if( has( id, "treetop" ) || ( t.has_flag( ter_furn_flag::TFLAG_NO_FLOOR ) &&
+                                  !t.has_flag( ter_furn_flag::TFLAG_WALL ) ) ) {
         st.draw = false;
         st.no_floor = true;
         return st;
