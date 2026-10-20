@@ -5,6 +5,12 @@ saves and mods are untouched: the reality bubble is turned into a voxel world wi
 sun shadows, the game's own light map, smooth movement and 3D effects.
 
 <p align="center">
+    <img src="./doc/screenshots/update-3/crossroads-voxels.png" alt="Voxel style: a crossroads with a forest under a blue sky" width="100%">
+</p>
+<p align="center">
+    <img src="./doc/screenshots/update-3/shoulder-camera-forest.png" alt="Over the shoulder camera in a forest" width="80%">
+</p>
+<p align="center">
     <img src="./doc/screenshots/voxel-rooftop.png" alt="Voxel style: rooftop with sun shadows" width="49%">
     <img src="./doc/screenshots/sprites-rooftop.png" alt="Tileset sprites style: the same rooftop with UltimateCataclysm" width="49%">
 </p>
