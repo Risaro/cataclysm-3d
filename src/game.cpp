@@ -223,6 +223,7 @@
 #include "vpart_range.h"
 #include "wcwidth.h"
 #include "weakpoint.h"
+#include "voxel_view.h"
 #include "weather.h"
 #include "weather_type.h"
 #include "worldfactory.h"
@@ -601,7 +602,7 @@ void game::toggle_language_to_en()
 bool game::is_tileset_isometric() const
 {
 #if defined(TILES)
-    return use_tiles && tilecontext && tilecontext->is_isometric();
+    return use_tiles && tilecontext && tilecontext->is_isometric() && !voxel_view::active();
 #else
     return false;
 #endif

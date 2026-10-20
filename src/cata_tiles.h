@@ -943,6 +943,10 @@ class cata_tiles
         bool draw_item_highlight( const tripoint_bub_ms &pos, int &height_3d );
 
     public:
+        void flush_for_external_draw() {
+            flush_sprite_shader_for_untextured_draw();
+        }
+
         // Animation layers
         void init_explosion( const tripoint_bub_ms &p, int radius );
         void draw_explosion_frame();

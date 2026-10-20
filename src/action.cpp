@@ -41,6 +41,7 @@
 #include "uilist.h"
 #include "ui_manager.h"
 #include "vehicle.h"
+#include "voxel_view.h"
 #include "vpart_position.h"
 
 static const itype_id itype_swim_fins( "swim_fins" );
@@ -538,8 +539,10 @@ std::optional<std::string> press_x_if_bound( action_id act )
     return press_x( act );
 }
 
-action_id get_movement_action_from_delta( const tripoint_rel_ms &d, const iso_rotate rot )
+action_id get_movement_action_from_delta( const tripoint_rel_ms &delta, const iso_rotate rot )
 {
+    const tripoint_rel_ms d = rot == iso_rotate::yes && voxel_view::active() ?
+                              tripoint_rel_ms( voxel_view::map_to_screen( delta.xy() ), delta.z() ) : delta;
     const bool iso_mode = rot == iso_rotate::yes && g->is_tileset_isometric();
     if( d.xy() == point_rel_ms::north ) {
         return iso_mode ? ACTION_MOVE_FORTH_LEFT : ACTION_MOVE_FORTH;
@@ -571,7 +574,7 @@ action_id get_movement_action_from_delta( const tripoint_rel_ms &d, const iso_ro
     return ACTION_NULL;
 }
 
-point_rel_ms get_delta_from_movement_action( const action_id act, const iso_rotate rot )
+static point_rel_ms screen_delta_from_movement_action( const action_id act, const iso_rotate rot )
 {
     const bool iso_mode = rot == iso_rotate::yes && g->is_tileset_isometric();
     switch( act ) {
@@ -594,6 +597,12 @@ point_rel_ms get_delta_from_movement_action( const action_id act, const iso_rota
         default:
             return point_rel_ms::zero;
     }
+}
+
+point_rel_ms get_delta_from_movement_action( const action_id act, const iso_rotate rot )
+{
+    const point_rel_ms d = screen_delta_from_movement_action( act, rot );
+    return rot == iso_rotate::yes && voxel_view::active() ? voxel_view::screen_to_map( d ) : d;
 }
 
 std::optional<input_event> hotkey_for_action( const action_id action,

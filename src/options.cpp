@@ -2554,6 +2554,20 @@ void options_manager::add_options_graphics()
              true, COPT_CURSES_HIDE
            );
 
+        add( "VOXEL_VIEW", page_id, to_translation( "3D voxel view" ),
+             to_translation( "If true, the map is drawn as a 3D voxel scene.  Hold the middle mouse button and drag to rotate the camera, use the zoom keys to move it closer or farther." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_VIEW" ).setPrerequisite( "USE_TILES" );
+
+        add( "VOXEL_SHADOWS", page_id, to_translation( "3D voxel shadows" ),
+             to_translation( "If true, the sun casts shadows in the 3D voxel view." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_SHADOWS" ).setPrerequisite( "VOXEL_VIEW" );
+
         add( "TILES", page_id, to_translation( "Choose tileset" ),
              to_translation( "Choose the tileset you want to use." ),
              build_tilesets_list(), "UltimateCataclysm", COPT_CURSES_HIDE

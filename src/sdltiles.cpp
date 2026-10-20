@@ -83,6 +83,7 @@
 #include "touch_joystick.h" // IWYU pragma: keep
 #include "uistate.h"
 #include "ui_manager.h"
+#include "voxel_view.h"
 #include "wcwidth.h"
 #include "cata_imgui.h"
 
@@ -150,6 +151,16 @@ static SDL_Renderer_Ptr renderer;
 static Uint32 pixel_format = SDL_PIXELFORMAT_UNKNOWN;
 static SDL_Texture_Ptr display_buffer;
 static GeometryRenderer_Ptr geometry;
+static SDL_Texture_Ptr voxel_texture;
+static point voxel_texture_size;
+static std::vector<uint8_t> voxel_pixels;
+static bool voxel_dragging = false;
+
+static void release_voxel_texture()
+{
+    voxel_texture.reset();
+    voxel_texture_size = point::zero;
+}
 // reused across curses text passes; always flushed before a pass returns
 static text_batch curses_text_batch;
 static std::unique_ptr<cata_shader::variant_pass> shared_variant_pass;
@@ -767,6 +778,7 @@ static void WinCreate()
                            "Failed to initialize display buffer under accelerated rendering, falling back to software rendering.";
             software_renderer = true;
             display_buffer.reset();
+            release_voxel_texture();
             renderer.reset();
             // The poisoned accelerated renderer is destroyed; clear the latch
             // SetupRenderTarget raised so the software fallback is not pre-refused.
@@ -838,7 +850,9 @@ static void WinDestroy()
     shared_lightmap.reset();
     shared_variant_pass.reset();
     display_buffer.reset();
+    release_voxel_texture();
     renderer.reset();
+    voxel_view::shutdown();
     ::window.reset();
 }
 
@@ -1950,6 +1964,7 @@ bool renderer_resource_coordinator::install_renderer_with_fallback()
         if( check_pause_abort() ) {
             return false;
         }
+        release_voxel_texture();
         renderer.reset();
         if( check_pause_abort() ) {
             return false;
@@ -2493,6 +2508,7 @@ void renderer_recovery_test_support::teardown_software_renderer()
     test_shader_variants_override.reset();
     override_text_atlas( std::nullopt );
     display_buffer.reset();
+    release_voxel_texture();
     renderer.reset();
     window.reset();
 
@@ -4118,6 +4134,24 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &w )
             TERRAIN_WINDOW_TERM_HEIGHT * font->height,
             overlay_strings,
             color_blocks );
+
+        if( voxel_view::active() ) {
+            const int vw = TERRAIN_WINDOW_TERM_WIDTH * font->width;
+            const int vh = TERRAIN_WINDOW_TERM_HEIGHT * font->height;
+            if( voxel_view::render( g->ter_view_p, vw, vh, voxel_pixels ) ) {
+                if( !voxel_texture || voxel_texture_size != point( vw, vh ) ) {
+                    voxel_texture = CreateTexture( renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING,
+                                                   vw, vh );
+                    voxel_texture_size = point( vw, vh );
+                }
+                if( voxel_texture ) {
+                    SDL_UpdateTexture( voxel_texture.get(), nullptr, voxel_pixels.data(), vw * 4 );
+                    tilecontext->flush_for_external_draw();
+                    const SDL_Rect dst = { win->pos.x * fontwidth, win->pos.y * fontheight, vw, vh };
+                    RenderCopy( renderer, voxel_texture, nullptr, &dst );
+                }
+            }
+        }
 
         // color blocks overlay
         if( !color_blocks.second.empty() ) {
@@ -6387,6 +6421,15 @@ static void CheckMessages()
                 }
 #endif
                 case CATA_MOUSEMOTION:
+                    if( voxel_dragging ) {
+                        voxel_view::orbit( ev.motion.xrel, ev.motion.yrel );
+                        if( g ) {
+                            g->invalidate_main_ui_adaptor();
+                        }
+                        ui_manager::redraw_invalidated();
+                        refresh_display();
+                        break;
+                    }
                     if( ! mouse.enabled ) {
                         break;
                     }
@@ -6407,6 +6450,11 @@ static void CheckMessages()
                     break;
 
                 case CATA_MOUSEBUTTONDOWN:
+                    if( ev.button.button == SDL_BUTTON_MIDDLE && voxel_view::active() &&
+                        !cataimgui::client::want_capture_mouse() ) {
+                        voxel_dragging = true;
+                        break;
+                    }
                     if( ! mouse.enabled ) {
                         break;
                     }
@@ -6430,6 +6478,10 @@ static void CheckMessages()
                     break;
 
                 case CATA_MOUSEBUTTONUP:
+                    if( ev.button.button == SDL_BUTTON_MIDDLE && voxel_dragging ) {
+                        voxel_dragging = false;
+                        break;
+                    }
                     if( ! mouse.enabled ) {
                         break;
                     }
@@ -7394,6 +7446,10 @@ std::optional<tripoint_bub_ms> input_context::get_coordinates( const catacurses:
     }
 
     const point screen_pos = logical_coordinate - win_min;
+
+    if( capture_win == g->w_terrain && use_tiles && voxel_view::active() ) {
+        return voxel_view::pick( screen_pos, win_size );
+    }
 
     const bool use_isometric = g->w_overmap &&
                                capture_win == g->w_overmap ? false : g->is_tileset_isometric();

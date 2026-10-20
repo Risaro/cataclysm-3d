@@ -37,6 +37,7 @@
 #include "string_input_popup.h"
 #include "translations.h"
 #include "ui_manager.h"
+#include "voxel_view.h"
 #include "sdl_gamepad.h"
 
 enum class kb_menu_status {
@@ -632,7 +633,11 @@ static std::optional<coords::coord_point<Point, coords::origin::relative, Scale>
 std::optional<tripoint_rel_ms> input_context::get_direction_rel_ms( const std::string &action )
 const
 {
-    return get_direction<tripoint, coords::ms>( action, iso_mode );
+    std::optional<tripoint_rel_ms> d = get_direction<tripoint, coords::ms>( action, iso_mode );
+    if( d && iso_mode && voxel_view::active() ) {
+        d = tripoint_rel_ms( voxel_view::screen_to_map( d->xy() ), d->z() );
+    }
+    return d;
 }
 
 std::optional<tripoint_rel_omt> input_context::get_direction_rel_omt( const std::string &action )

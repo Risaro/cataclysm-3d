@@ -1,0 +1,1887 @@
+#include "voxel_view.h"
+
+#if defined(TILES)
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <string>
+#include <unordered_map>
+#include <utility>
+
+#include <SDL3/SDL_video.h>
+
+#include "avatar.h"
+#include "cached_options.h"
+#include "calendar.h"
+#include "coordinates.h"
+#include "creature.h"
+#include "debug.h"
+#include "field.h"
+#include "field_type.h"
+#include "game.h"
+#include "item.h"
+#include "map.h"
+#include "map_memory.h"
+#include "mapdata.h"
+#include "monster.h"
+#include "mtype.h"
+#include "npc.h"
+#include "options.h"
+#include "sdl_utils.h"
+#include "type_id.h"
+#include "uistate.h"
+#include "units.h"
+#include "veh_type.h"
+#include "vehicle.h"
+#include "voxel_gl.h"
+#include "voxel_model.h"
+#include "voxel_models.h"
+#include "vpart_position.h"
+
+namespace
+{
+
+constexpr float level_height = voxel_level_height * voxel_size;
+constexpr float pi = 3.14159265358979f;
+constexpr int shadow_size = 2048;
+
+struct vec3 {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+};
+
+vec3 operator+( const vec3 &a, const vec3 &b )
+{
+    return { a.x + b.x, a.y + b.y, a.z + b.z };
+}
+
+vec3 operator-( const vec3 &a, const vec3 &b )
+{
+    return { a.x - b.x, a.y - b.y, a.z - b.z };
+}
+
+vec3 operator*( const vec3 &a, float s )
+{
+    return { a.x * s, a.y * s, a.z * s };
+}
+
+float dot( const vec3 &a, const vec3 &b )
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+vec3 cross( const vec3 &a, const vec3 &b )
+{
+    return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x };
+}
+
+vec3 normalize( const vec3 &a )
+{
+    const float l = std::sqrt( dot( a, a ) );
+    return l > 0.0f ? a * ( 1.0f / l ) : a;
+}
+
+struct mat4 {
+    std::array<float, 16> m = {};
+
+    static mat4 identity() {
+        mat4 r;
+        r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1.0f;
+        return r;
+    }
+};
+
+mat4 operator*( const mat4 &a, const mat4 &b )
+{
+    mat4 r;
+    for( int c = 0; c < 4; ++c ) {
+        for( int row = 0; row < 4; ++row ) {
+            float s = 0.0f;
+            for( int k = 0; k < 4; ++k ) {
+                s += a.m[k * 4 + row] * b.m[c * 4 + k];
+            }
+            r.m[c * 4 + row] = s;
+        }
+    }
+    return r;
+}
+
+mat4 perspective( float fovy, float aspect, float znear, float zfar )
+{
+    const float f = 1.0f / std::tan( fovy / 2.0f );
+    mat4 r;
+    r.m[0] = f / aspect;
+    r.m[5] = f;
+    r.m[10] = ( zfar + znear ) / ( znear - zfar );
+    r.m[11] = -1.0f;
+    r.m[14] = 2.0f * zfar * znear / ( znear - zfar );
+    return r;
+}
+
+mat4 ortho( float l, float r, float b, float t, float n, float f )
+{
+    mat4 o = mat4::identity();
+    o.m[0] = 2.0f / ( r - l );
+    o.m[5] = 2.0f / ( t - b );
+    o.m[10] = -2.0f / ( f - n );
+    o.m[12] = -( r + l ) / ( r - l );
+    o.m[13] = -( t + b ) / ( t - b );
+    o.m[14] = -( f + n ) / ( f - n );
+    return o;
+}
+
+mat4 look_at( const vec3 &eye, const vec3 &target, const vec3 &up )
+{
+    const vec3 f = normalize( target - eye );
+    const vec3 s = normalize( cross( f, up ) );
+    const vec3 u = cross( s, f );
+    mat4 r = mat4::identity();
+    r.m[0] = s.x;
+    r.m[4] = s.y;
+    r.m[8] = s.z;
+    r.m[1] = u.x;
+    r.m[5] = u.y;
+    r.m[9] = u.z;
+    r.m[2] = -f.x;
+    r.m[6] = -f.y;
+    r.m[10] = -f.z;
+    r.m[12] = -dot( s, eye );
+    r.m[13] = -dot( u, eye );
+    r.m[14] = dot( f, eye );
+    return r;
+}
+
+bool invert( const mat4 &in, mat4 &out )
+{
+    const std::array<float, 16> &m = in.m;
+    std::array<float, 16> inv;
+    inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] +
+             m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+    inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] -
+             m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+    inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] +
+             m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+    inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] -
+              m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+    inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] -
+             m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+    inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] +
+             m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+    inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] -
+             m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+    inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] +
+              m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+    inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] +
+             m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+    inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] -
+             m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+    inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] +
+              m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+    inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] -
+              m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] -
+             m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] +
+             m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] -
+              m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] +
+              m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+    float det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+    if( std::fabs( det ) < 1e-12f ) {
+        return false;
+    }
+    det = 1.0f / det;
+    for( int i = 0; i < 16; ++i ) {
+        out.m[i] = inv[i] * det;
+    }
+    return true;
+}
+
+struct instance {
+    float x;
+    float y;
+    float z;
+    float yaw;
+    float r;
+    float g;
+    float b;
+    float light;
+    float scale;
+    float emissive;
+    float desat;
+    float pad;
+};
+
+struct gpu_mesh {
+    GLuint vao = 0;
+    GLuint vbo = 0;
+    GLsizei count = 0;
+};
+
+struct gpu_model {
+    gpu_mesh opaque;
+    gpu_mesh glass;
+    bool emissive = false;
+};
+
+struct instance_lists {
+    std::vector<std::vector<instance>> per_model;
+    std::vector<int> touched;
+
+    void add( int model, const instance &inst ) {
+        if( model >= static_cast<int>( per_model.size() ) ) {
+            per_model.resize( model + 1 );
+        }
+        if( per_model[model].empty() ) {
+            touched.push_back( model );
+        }
+        per_model[model].push_back( inst );
+    }
+
+    void clear() {
+        for( int m : touched ) {
+            per_model[m].clear();
+        }
+        touched.clear();
+    }
+};
+
+struct tile_style {
+    bool draw = true;
+    vm_kind kind = vm_kind::floor;
+    vm_material material = vm_material::generic;
+    voxel_rgb color;
+    voxel_rgb color2;
+    uint8_t variant = 0;
+    uint8_t param = 0;
+    uint8_t variants = 1;
+    bool overlay = false;
+    vm_material floor_material = vm_material::grass;
+    voxel_rgb floor_color;
+    bool wall_like = false;
+    bool oriented = false;
+    bool fence = false;
+    bool stripes = false;
+    bool spin = false;
+    bool no_floor = false;
+};
+
+struct camera_state {
+    float yaw = 0.0f;
+    float pitch = 0.95f;
+    mat4 view_proj;
+    int width = 0;
+    int height = 0;
+    int center_z = 0;
+    bool valid = false;
+};
+
+camera_state cam;
+
+constexpr voxel_rgb rgb( uint8_t r, uint8_t g, uint8_t b )
+{
+    return { r, g, b };
+}
+
+voxel_rgb to_rgb( const nc_color &c )
+{
+    const SDL_Color s = curses_color_to_SDL( c );
+    return { s.r, s.g, s.b };
+}
+
+voxel_rgb soften( const voxel_rgb &c )
+{
+    return voxel_mix( c, rgb( 128, 124, 118 ), 0.3f );
+}
+
+bool has( const std::string &s, const char *key )
+{
+    return s.find( key ) != std::string::npos;
+}
+
+template<typename... Keys>
+bool has_any( const std::string &s, Keys... keys )
+{
+    return ( has( s, keys ) || ... );
+}
+
+vm_material material_from_id( const std::string &id, vm_material fallback )
+{
+    if( has_any( id, "brick" ) ) {
+        return vm_material::brick;
+    }
+    if( has_any( id, "log", "wood", "plank" ) ) {
+        return vm_material::wood;
+    }
+    if( has_any( id, "metal", "steel", "scrap" ) ) {
+        return vm_material::metal;
+    }
+    if( has_any( id, "concrete", "cement", "cinder" ) ) {
+        return vm_material::concrete;
+    }
+    if( has_any( id, "glass" ) ) {
+        return vm_material::glass;
+    }
+    if( has_any( id, "rock", "stone" ) ) {
+        return vm_material::rock;
+    }
+    return fallback;
+}
+
+voxel_rgb material_color( vm_material m, const voxel_rgb &fallback )
+{
+    switch( m ) {
+        case vm_material::brick:
+            return rgb( 150, 72, 55 );
+        case vm_material::wood:
+        case vm_material::log:
+            return rgb( 135, 98, 62 );
+        case vm_material::metal:
+            return rgb( 125, 130, 136 );
+        case vm_material::concrete:
+            return rgb( 158, 156, 150 );
+        case vm_material::glass:
+            return rgb( 150, 200, 230 );
+        case vm_material::rock:
+            return rgb( 108, 102, 96 );
+        case vm_material::grass:
+            return rgb( 80, 128, 52 );
+        case vm_material::dirt:
+            return rgb( 112, 84, 56 );
+        case vm_material::sand:
+            return rgb( 205, 185, 130 );
+        case vm_material::pavement:
+            return rgb( 62, 62, 66 );
+        case vm_material::sidewalk:
+            return rgb( 165, 163, 156 );
+        case vm_material::tile:
+            return voxel_mix( fallback, rgb( 220, 220, 214 ), 0.5f );
+        case vm_material::snow:
+            return rgb( 232, 236, 242 );
+        case vm_material::carpet:
+        case vm_material::generic:
+            break;
+    }
+    return fallback;
+}
+
+void classify_floor( const std::string &id, const voxel_rgb &base, tile_style &st )
+{
+    st.kind = vm_kind::floor;
+    st.variants = 4;
+    st.spin = true;
+    if( has_any( id, "grass", "lawn", "moss", "fungus" ) ) {
+        st.material = vm_material::grass;
+        st.color = has( id, "dead" ) ? rgb( 132, 120, 70 ) : has( id, "fungus" ) ? rgb( 120, 120,
+                   100 ) : rgb( 80, 128, 52 );
+    } else if( has_any( id, "pavement", "asphalt", "road", "parking" ) ) {
+        st.material = vm_material::pavement;
+        st.color = material_color( st.material, base );
+        st.stripes = has( id, "_y" );
+        st.spin = false;
+    } else if( has_any( id, "sidewalk" ) ) {
+        st.material = vm_material::sidewalk;
+        st.color = material_color( st.material, base );
+    } else if( has_any( id, "concrete", "thconc", "cement", "bunker", "lab" ) ) {
+        st.material = vm_material::concrete;
+        st.color = material_color( st.material, base );
+    } else if( has_any( id, "linoleum", "tile", "marble" ) ) {
+        st.material = vm_material::tile;
+        st.color = material_color( st.material, base );
+    } else if( has_any( id, "carpet", "rug" ) ) {
+        st.material = vm_material::carpet;
+        st.color = base;
+    } else if( has_any( id, "metal", "grate", "steel" ) ) {
+        st.material = vm_material::metal;
+        st.color = material_color( vm_material::metal, base );
+    } else if( has_any( id, "sand", "beach" ) ) {
+        st.material = vm_material::sand;
+        st.color = material_color( st.material, base );
+    } else if( has_any( id, "snow", "ice" ) ) {
+        st.material = vm_material::snow;
+        st.color = material_color( st.material, base );
+    } else if( has_any( id, "rock", "stone", "gravel", "slab" ) ) {
+        st.material = vm_material::rock;
+        st.color = material_color( st.material, base );
+    } else if( has_any( id, "dirt", "mud", "soil", "clay", "pit", "furrow", "trail" ) ) {
+        st.material = vm_material::dirt;
+        st.color = has( id, "clay" ) ? rgb( 150, 92, 60 ) : material_color( vm_material::dirt, base );
+    } else if( has_any( id, "floor", "wood", "plank", "boards" ) ) {
+        st.material = vm_material::wood;
+        st.color = rgb( 140, 104, 68 );
+        st.spin = false;
+    } else {
+        st.material = vm_material::generic;
+        st.color = base;
+    }
+}
+
+tile_style classify_terrain( const ter_t &t )
+{
+    tile_style st;
+    const std::string id = t.id.str();
+    const voxel_rgb base = soften( to_rgb( t.color() ) );
+    st.color = base;
+    st.color2 = rgb( 95, 70, 50 );
+
+    if( t.has_flag( ter_furn_flag::TFLAG_NO_FLOOR ) && !t.has_flag( ter_furn_flag::TFLAG_WALL ) ) {
+        st.draw = false;
+        st.no_floor = true;
+        return st;
+    }
+    const auto vegetation_floor = [&]() {
+        st.overlay = true;
+        st.floor_material = has_any( id, "dirt", "underbrush" ) ? vm_material::dirt : vm_material::grass;
+        st.floor_color = material_color( st.floor_material, base );
+    };
+
+    if( t.has_flag( ter_furn_flag::TFLAG_TREE ) || has( id, "t_tree" ) ) {
+        vegetation_floor();
+        st.variants = 6;
+        st.spin = true;
+        st.color = rgb( 70, 122, 46 );
+        st.color2 = has( id, "birch" ) ? rgb( 205, 205, 195 ) : rgb( 92, 68, 48 );
+        if( has_any( id, "dead", "burnt", "charred" ) ) {
+            st.kind = vm_kind::dead_tree;
+            st.color2 = rgb( 85, 72, 60 );
+        } else if( has_any( id, "pine", "spruce", "fir", "hemlock", "cedar", "juniper", "conifer" ) ) {
+            st.kind = vm_kind::pine;
+            st.color = rgb( 38, 88, 50 );
+        } else if( has_any( id, "young", "sapling" ) ) {
+            st.kind = vm_kind::young_tree;
+        } else {
+            st.kind = vm_kind::tree;
+            if( has_any( id, "apple", "cherry" ) ) {
+                st.param = 1;
+            } else if( has_any( id, "peach", "apricot", "orange" ) ) {
+                st.param = 2;
+            } else if( has_any( id, "pear", "lemon" ) ) {
+                st.param = 3;
+            } else if( has_any( id, "plum", "mulberry", "elderberry" ) ) {
+                st.param = 4;
+            }
+        }
+        return st;
+    }
+    if( t.has_flag( ter_furn_flag::TFLAG_SHRUB ) || has_any( id, "shrub", "underbrush", "bush" ) ) {
+        vegetation_floor();
+        st.kind = vm_kind::shrub;
+        st.variants = 4;
+        st.spin = true;
+        st.color = rgb( 62, 112, 44 );
+        if( has_any( id, "berry", "rose", "hibiscus", "flower" ) ) {
+            st.param = 1;
+            st.color2 = has( id, "blue" ) ? rgb( 60, 70, 180 ) : rgb( 190, 40, 60 );
+        }
+        return st;
+    }
+    if( t.has_flag( ter_furn_flag::TFLAG_FLOWER ) ) {
+        vegetation_floor();
+        st.kind = vm_kind::flower;
+        st.variants = 4;
+        return st;
+    }
+    if( has_any( id, "grass_long", "grass_tall", "tallgrass", "long_grass", "tall_grass" ) ) {
+        vegetation_floor();
+        st.kind = vm_kind::tall_grass;
+        st.variants = 4;
+        st.spin = true;
+        st.color = rgb( 92, 140, 58 );
+        return st;
+    }
+    if( t.has_flag( ter_furn_flag::TFLAG_DOOR ) || has( id, "door" ) ) {
+        st.kind = ( has_any( id, "_o", "open" ) && !has( id, "_off" ) ) ? vm_kind::door_open : vm_kind::door;
+        if( has( id, "broken" ) || has( id, "_b" ) ) {
+            st.kind = vm_kind::door_open;
+        }
+        st.material = has( id, "glass" ) ? vm_material::glass : vm_material::generic;
+        st.color = has_any( id, "metal", "steel", "bar", "vault" ) ? rgb( 120, 126, 132 ) : rgb( 128, 88,
+                   54 );
+        st.color2 = rgb( 110, 100, 90 );
+        st.oriented = true;
+        st.wall_like = true;
+        return st;
+    }
+    if( t.has_flag( ter_furn_flag::TFLAG_WINDOW ) || has( id, "window" ) ) {
+        st.kind = vm_kind::window;
+        st.material = material_from_id( id, vm_material::generic );
+        st.color = st.material == vm_material::generic ? rgb( 185, 175, 160 ) : material_color(
+                       st.material, base );
+        if( st.material == vm_material::glass ) {
+            st.material = vm_material::generic;
+            st.color = rgb( 185, 175, 160 );
+        }
+        st.color2 = rgb( 230, 230, 225 );
+        if( has( id, "board" ) ) {
+            st.variant = 3;
+        } else if( has_any( id, "empty", "no_glass", "frame", "open" ) ) {
+            st.variant = 2;
+        } else if( has( id, "broken" ) ) {
+            st.variant = 1;
+        } else if( has_any( id, "curtain", "domestic" ) ) {
+            st.variant = 4;
+            st.color2 = rgb( 170, 60, 60 );
+        }
+        st.oriented = true;
+        st.wall_like = true;
+        return st;
+    }
+    if( t.has_flag( ter_furn_flag::TFLAG_WALL ) || ( !t.has_flag( ter_furn_flag::TFLAG_TRANSPARENT ) &&
+            t.movecost == 0 && !t.has_flag( ter_furn_flag::TFLAG_THIN_OBSTACLE ) ) ) {
+        st.kind = vm_kind::wall;
+        st.material = material_from_id( id, vm_material::generic );
+        if( id == "t_rock" || has_any( id, "t_rock_", "t_soil", "_cave", "natural" ) ) {
+            st.material = vm_material::rock;
+        }
+        st.color = st.material == vm_material::generic ? voxel_mix( base, rgb( 200, 190, 172 ),
+                   0.55f ) : material_color( st.material, base );
+        st.wall_like = true;
+        st.variants = 3;
+        return st;
+    }
+    if( t.has_flag( ter_furn_flag::TFLAG_THIN_OBSTACLE ) || has_any( id, "fence", "railing", "rail" ) ) {
+        st.overlay = true;
+        st.floor_material = vm_material::grass;
+        st.floor_color = material_color( vm_material::grass, base );
+        if( has_any( id, "railing", "guardrail" ) ) {
+            st.floor_material = vm_material::concrete;
+            st.floor_color = material_color( vm_material::concrete, base );
+        }
+        st.kind = vm_kind::fence;
+        st.fence = true;
+        st.variant = has( id, "chain" ) ? 1 : 0;
+        st.color = has( id, "chain" ) ? rgb( 150, 152, 156 ) : has_any( id, "metal", "railing",
+                   "guardrail", "wire" ) ? rgb( 105, 108, 112 ) : rgb( 120, 88, 56 );
+        return st;
+    }
+    if( t.has_flag( ter_furn_flag::TFLAG_GOES_UP ) ) {
+        st.kind = vm_kind::stairs_up;
+        st.color = rgb( 140, 120, 100 );
+        st.color2 = rgb( 100, 90, 80 );
+        return st;
+    }
+    if( t.has_flag( ter_furn_flag::TFLAG_GOES_DOWN ) ) {
+        st.kind = has( id, "stairs" ) ? vm_kind::stairs_down : vm_kind::hole;
+        st.color = rgb( 140, 120, 100 );
+        st.color2 = rgb( 130, 125, 118 );
+        return st;
+    }
+    if( t.has_flag( ter_furn_flag::TFLAG_SWIMMABLE ) || t.has_flag( ter_furn_flag::TFLAG_LIQUID ) ||
+        t.has_flag( ter_furn_flag::TFLAG_DEEP_WATER ) || t.has_flag( ter_furn_flag::TFLAG_SHALLOW_WATER ) ||
+        has( id, "water" ) ) {
+        st.kind = vm_kind::water;
+        st.variants = 4;
+        st.spin = true;
+        if( has_any( id, "sewage", "sludge" ) ) {
+            st.color = rgb( 92, 96, 60 );
+        } else if( has_any( id, "swamp", "murky" ) ) {
+            st.color = rgb( 62, 92, 72 );
+        } else if( t.has_flag( ter_furn_flag::TFLAG_DEEP_WATER ) || has( id, "deep" ) ) {
+            st.color = rgb( 34, 72, 138 );
+        } else {
+            st.color = rgb( 62, 112, 162 );
+        }
+        return st;
+    }
+    if( t.has_flag( ter_furn_flag::TFLAG_RUBBLE ) || has_any( id, "rubble", "debris" ) ) {
+        st.overlay = true;
+        st.floor_material = vm_material::dirt;
+        st.floor_color = material_color( vm_material::dirt, base );
+        st.kind = vm_kind::rubble;
+        st.variants = 4;
+        st.spin = true;
+        st.color = rgb( 130, 124, 116 );
+        return st;
+    }
+    classify_floor( id, base, st );
+    return st;
+}
+
+tile_style classify_furniture( const furn_t &f )
+{
+    tile_style st;
+    const std::string id = f.id.str();
+    const voxel_rgb base = soften( to_rgb( f.color() ) );
+    st.color = base;
+    st.color2 = voxel_shade( base, 0.8f );
+    const voxel_rgb white = rgb( 228, 228, 222 );
+    const voxel_rgb wood = rgb( 128, 90, 58 );
+    const voxel_rgb metal = rgb( 128, 133, 138 );
+
+    if( has( id, "toilet" ) ) {
+        st.kind = vm_kind::toilet;
+        st.color = white;
+    } else if( has( id, "bathtub" ) ) {
+        st.kind = vm_kind::bathtub;
+        st.color = white;
+    } else if( has( id, "sink" ) ) {
+        st.kind = vm_kind::sink;
+        st.color = white;
+        st.color2 = wood;
+    } else if( has_any( id, "fridge", "freezer", "refrigerator", "washer", "dryer" ) ) {
+        st.kind = vm_kind::cabinet;
+        st.color = white;
+        st.color2 = metal;
+    } else if( has_any( id, "oven", "stove", "fireplace", "furnace", "kiln", "forge", "smoker" ) ) {
+        st.kind = vm_kind::stove;
+        st.color = rgb( 70, 70, 74 );
+    } else if( has_any( id, "tv", "computer", "console", "terminal", "arcade", "monitor", "pinball" ) ) {
+        st.kind = vm_kind::screen;
+        st.color = rgb( 70, 140, 200 );
+        st.color2 = has( id, "console" ) ? metal : wood;
+    } else if( has_any( id, "bed", "mattress", "cot", "bunk" ) ) {
+        st.kind = vm_kind::bed;
+        st.color = wood;
+        st.color2 = base;
+    } else if( has_any( id, "sofa", "couch", "armchair", "loveseat" ) ) {
+        st.kind = vm_kind::sofa;
+    } else if( has_any( id, "chair", "stool", "seat", "bench", "pew", "throne" ) ) {
+        st.kind = vm_kind::chair;
+        st.spin = true;
+    } else if( has_any( id, "table", "desk", "workbench", "lectern", "altar" ) ) {
+        st.kind = vm_kind::table;
+        if( has_any( id, "metal", "steel" ) ) {
+            st.color = metal;
+        } else if( !has( id, "pool" ) ) {
+            st.color = wood;
+        }
+    } else if( has_any( id, "counter", "cupboard", "kitchen", "register", "cash", "reception" ) ) {
+        st.kind = vm_kind::counter;
+        st.color = has( id, "metal" ) ? metal : wood;
+        st.color2 = rgb( 200, 196, 186 );
+    } else if( has_any( id, "bookcase", "locker", "cabinet", "wardrobe", "dresser", "shelf", "rack",
+                        "display", "vending", "armoire", "safe", "filing", "closet", "machine" ) ) {
+        st.kind = vm_kind::cabinet;
+        if( has_any( id, "locker", "safe", "filing", "rack", "vending", "machine" ) ) {
+            st.color = metal;
+        } else {
+            st.color = wood;
+        }
+        st.color2 = rgb( 200, 190, 120 );
+    } else if( has_any( id, "dumpster", "recycle" ) ) {
+        st.kind = vm_kind::dumpster;
+        st.color = rgb( 50, 100, 60 );
+    } else if( has_any( id, "barrel", "keg", "drum", "trashcan", "trash_can", "tank", "bin" ) ) {
+        st.kind = vm_kind::barrel;
+    } else if( has_any( id, "crate", "box", "cardboard", "chest", "coffin", "casket" ) ) {
+        st.kind = vm_kind::crate;
+        st.color = has( id, "cardboard" ) ? rgb( 170, 135, 90 ) : wood;
+    } else if( has_any( id, "sign", "billboard", "board" ) ) {
+        st.kind = vm_kind::sign;
+    } else if( has_any( id, "lamp", "light", "lantern", "torch" ) ) {
+        st.kind = vm_kind::lamp;
+        st.color2 = metal;
+    } else if( has_any( id, "boulder", "rock", "stone", "statue" ) ) {
+        st.kind = vm_kind::boulder;
+        st.color = rgb( 120, 115, 108 );
+        st.spin = true;
+        st.variants = 3;
+    } else if( has_any( id, "rubble", "debris", "wreckage", "ash", "junk", "pile" ) ) {
+        st.kind = vm_kind::rubble;
+        st.spin = true;
+        st.variants = 3;
+    } else if( has_any( id, "bush", "shrub", "underbrush", "fern" ) ) {
+        st.kind = vm_kind::shrub;
+        st.color = rgb( 62, 112, 44 );
+        st.spin = true;
+        st.variants = 3;
+        if( has( id, "berry" ) ) {
+            st.param = 1;
+            st.color2 = rgb( 160, 30, 60 );
+        }
+    } else if( has_any( id, "flower", "dandelion", "mushroom", "cattail", "lily", "bluebell", "dahlia",
+                        "chamomile", "lotus", "poppy", "sunflower", "tulip", "rose", "datura", "plant", "seed" ) ) {
+        st.kind = vm_kind::flower;
+        st.variants = 3;
+    } else if( has_any( id, "tall_grass", "grass", "hay", "reed" ) ) {
+        st.kind = vm_kind::tall_grass;
+        st.color = has( id, "hay" ) ? rgb( 200, 180, 90 ) : rgb( 92, 140, 58 );
+        st.spin = true;
+        st.variants = 3;
+    } else if( has_any( id, "tree", "sapling" ) ) {
+        st.kind = vm_kind::young_tree;
+        st.color = rgb( 70, 122, 46 );
+        st.color2 = rgb( 92, 68, 48 );
+    } else if( has_any( id, "fence", "railing", "barricade", "sandbag", "barbed", "wire" ) ) {
+        st.kind = vm_kind::fence;
+        st.fence = true;
+        st.color = has( id, "sandbag" ) ? rgb( 170, 150, 110 ) : base;
+    } else if( has( id, "fire" ) ) {
+        st.kind = vm_kind::fire;
+    } else {
+        st.kind = vm_kind::furniture;
+    }
+    return st;
+}
+
+const voxel_rgb &palette_pick( const std::vector<voxel_rgb> &p, uint32_t h )
+{
+    return p[h % p.size()];
+}
+
+const std::vector<voxel_rgb> &shirt_palette()
+{
+    static const std::vector<voxel_rgb> p = {
+        rgb( 160, 60, 55 ), rgb( 60, 100, 160 ), rgb( 70, 120, 70 ), rgb( 170, 150, 70 ),
+        rgb( 110, 70, 130 ), rgb( 200, 200, 195 ), rgb( 70, 70, 75 ), rgb( 180, 110, 60 )
+    };
+    return p;
+}
+
+const std::vector<voxel_rgb> &skin_palette()
+{
+    static const std::vector<voxel_rgb> p = {
+        rgb( 232, 190, 150 ), rgb( 200, 150, 110 ), rgb( 150, 105, 70 ), rgb( 110, 75, 50 ),
+        rgb( 240, 205, 175 )
+    };
+    return p;
+}
+
+uint32_t string_hash( const std::string &s )
+{
+    uint32_t h = 2166136261u;
+    for( const char c : s ) {
+        h = ( h ^ static_cast<uint8_t>( c ) ) * 16777619u;
+    }
+    return h;
+}
+
+float size_scale( creature_size s )
+{
+    switch( s ) {
+        case creature_size::tiny:
+            return 0.45f;
+        case creature_size::small:
+            return 0.7f;
+        case creature_size::medium:
+            return 1.0f;
+        case creature_size::large:
+            return 1.35f;
+        case creature_size::huge:
+            return 1.8f;
+        case creature_size::num_sizes:
+            break;
+    }
+    return 1.0f;
+}
+
+vm_key monster_key( const monster &m )
+{
+    static const species_id zombie( "ZOMBIE" );
+    static const species_id human( "HUMAN" );
+    static const species_id feral( "FERAL" );
+    static const species_id ghoul( "GHOUL" );
+    static const species_id robot( "ROBOT" );
+    static const species_id robot_flying( "ROBOT_FLYING" );
+    static const species_id cyborg( "CYBORG" );
+    static const species_id bird( "BIRD" );
+    static const species_id insect( "INSECT" );
+    static const species_id insect_flying( "INSECT_FLYING" );
+    static const species_id spider( "SPIDER" );
+    static const species_id centipede( "CENTIPEDE" );
+    static const species_id worm( "WORM" );
+    static const species_id fish( "FISH" );
+    static const species_id amphibian( "AMPHIBIAN" );
+    static const species_id mammal( "MAMMAL" );
+    static const species_id reptile( "REPTILE" );
+    static const species_id fungus( "FUNGUS" );
+    static const species_id plant( "PLANT" );
+    static const species_id leech_plant( "LEECH_PLANT" );
+
+    const std::string id = m.type->id.str();
+    const uint32_t h = string_hash( id );
+    const voxel_rgb col = soften( to_rgb( m.basic_symbol_color() ) );
+    vm_key k;
+    k.color = col;
+    k.color2 = voxel_shade( col, 0.8f );
+    k.variant = static_cast<uint8_t>( h % 3 );
+    if( m.in_species( zombie ) || m.in_species( ghoul ) ) {
+        k.kind = vm_kind::zombie;
+        k.color = voxel_mix( col, rgb( 128, 146, 112 ), 0.6f );
+        k.color2 = voxel_shade( palette_pick( shirt_palette(), h ), 0.7f );
+    } else if( m.in_species( human ) || m.in_species( feral ) || m.in_species( cyborg ) ) {
+        k.kind = vm_kind::humanoid;
+        k.color = palette_pick( skin_palette(), h );
+        k.color2 = palette_pick( shirt_palette(), h >> 4 );
+    } else if( m.in_species( robot ) || m.in_species( robot_flying ) ) {
+        k.kind = vm_kind::robot;
+        k.color = voxel_mix( col, rgb( 150, 155, 160 ), 0.5f );
+    } else if( m.in_species( bird ) || m.in_species( insect_flying ) ) {
+        k.kind = m.in_species( bird ) ? vm_kind::bird : vm_kind::bug;
+    } else if( m.in_species( insect ) || m.in_species( spider ) || m.in_species( centipede ) ||
+               m.in_species( worm ) ) {
+        k.kind = vm_kind::bug;
+    } else if( m.in_species( fish ) || m.in_species( amphibian ) ) {
+        k.kind = vm_kind::fish;
+    } else if( m.in_species( mammal ) || m.in_species( reptile ) ) {
+        k.kind = vm_kind::quadruped;
+    } else if( m.in_species( fungus ) || m.in_species( plant ) || m.in_species( leech_plant ) ) {
+        k.kind = vm_kind::plant_creature;
+    } else {
+        k.kind = vm_kind::blob;
+    }
+    return k;
+}
+
+class voxel_renderer
+{
+    public:
+        bool render( const tripoint_bub_ms &center, int width, int height, std::vector<uint8_t> &pixels );
+        void shutdown();
+        bool failed = false;
+
+    private:
+        bool init();
+        bool ensure_targets( int w, int h );
+        int model_for( const vm_key &key );
+        GLuint compile( const char *vs, const char *fs );
+        void collect( const tripoint_bub_ms &center, int radius, float daylight );
+        void draw_pass( instance_lists &lists, bool glass, GLuint program );
+        void upload_instances( instance_lists &main, instance_lists &extra );
+
+        void add( instance_lists &lists, const vm_key &key, const tripoint_bub_ms &p, float lift, float yaw,
+                  float light, float desat, float scale = 1.0f, const voxel_rgb &tint = { 255, 255, 255 } );
+        void add_style( const tile_style &st, const tripoint_bub_ms &p, float light, float desat,
+                        bool furniture );
+        const tile_style &terrain_style( const ter_id &t );
+        const tile_style &furniture_style( const furn_id &f );
+        bool wall_like_at( const tripoint_bub_ms &p );
+        bool fence_like_at( const tripoint_bub_ms &p );
+
+        SDL_Window *window = nullptr;
+        SDL_GLContext context = nullptr;
+        bool initialized = false;
+
+        GLuint main_program = 0;
+        GLuint shadow_program = 0;
+        GLuint instance_vbo = 0;
+
+        GLuint msaa_fbo = 0;
+        GLuint msaa_color = 0;
+        GLuint msaa_depth = 0;
+        GLuint resolve_fbo = 0;
+        GLuint resolve_color = 0;
+        GLuint shadow_fbo = 0;
+        GLuint shadow_tex = 0;
+        int samples = 4;
+        int target_w = 0;
+        int target_h = 0;
+
+        std::vector<gpu_model> models;
+        std::unordered_map<uint64_t, int> model_lookup;
+        std::unordered_map<int, tile_style> ter_styles;
+        std::unordered_map<int, tile_style> furn_styles;
+
+        instance_lists main_lists;
+        instance_lists shadow_lists;
+        std::vector<instance> upload;
+        std::vector<std::pair<size_t, size_t>> main_ranges;
+        std::vector<std::pair<size_t, size_t>> extra_ranges;
+        bool drawing_shadow = false;
+
+        tripoint_bub_ms last_avatar_pos;
+        float avatar_yaw = 0.0f;
+};
+
+const char *main_vs = R"(#version 330 core
+layout( location = 0 ) in vec3 a_pos;
+layout( location = 1 ) in vec3 a_normal;
+layout( location = 2 ) in vec4 a_color;
+layout( location = 3 ) in vec4 i_pos;
+layout( location = 4 ) in vec4 i_tint;
+layout( location = 5 ) in vec4 i_extra;
+uniform mat4 u_vp;
+uniform mat4 u_light_vp;
+out vec3 v_color;
+out vec3 v_normal;
+out vec3 v_world;
+out vec4 v_shadow;
+out float v_light;
+out float v_emissive;
+out float v_desat;
+void main()
+{
+    float c = cos( i_pos.w );
+    float s = sin( i_pos.w );
+    vec3 p = ( a_pos - vec3( 0.5, 0.0, 0.5 ) ) * i_extra.x;
+    p = vec3( c * p.x - s * p.z, p.y, s * p.x + c * p.z ) + vec3( 0.5, 0.0, 0.5 );
+    vec3 world = p + i_pos.xyz;
+    v_normal = vec3( c * a_normal.x - s * a_normal.z, a_normal.y, s * a_normal.x + c * a_normal.z );
+    v_color = a_color.rgb * i_tint.rgb * a_color.a;
+    v_light = i_tint.a;
+    v_emissive = i_extra.y;
+    v_desat = i_extra.z;
+    v_world = world;
+    v_shadow = u_light_vp * vec4( world, 1.0 );
+    gl_Position = u_vp * vec4( world, 1.0 );
+}
+)";
+
+const char *main_fs = R"(#version 330 core
+in vec3 v_color;
+in vec3 v_normal;
+in vec3 v_world;
+in vec4 v_shadow;
+in float v_light;
+in float v_emissive;
+in float v_desat;
+uniform sampler2DShadow u_shadow;
+uniform vec3 u_sun;
+uniform float u_daylight;
+uniform float u_use_shadow;
+uniform vec3 u_focus;
+uniform float u_fog_far;
+uniform vec3 u_fog_color;
+uniform float u_alpha;
+out vec4 frag;
+float shadow_at()
+{
+    vec3 p = v_shadow.xyz / v_shadow.w * 0.5 + 0.5;
+    if( p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z > 1.0 ) {
+        return 1.0;
+    }
+    float sum = 0.0;
+    vec2 texel = vec2( 1.0 / 2048.0 );
+    for( int x = -1; x <= 1; ++x ) {
+        for( int y = -1; y <= 1; ++y ) {
+            sum += texture( u_shadow, vec3( p.xy + vec2( x, y ) * texel, p.z - 0.0012 ) );
+        }
+    }
+    return sum / 9.0;
+}
+void main()
+{
+    vec3 n = normalize( v_normal );
+    float shape = 0.6 + 0.3 * n.y + 0.07 * n.x - 0.05 * n.z;
+    float sun = max( dot( n, u_sun ), 0.0 );
+    float sh = u_use_shadow > 0.5 ? shadow_at() : 1.0;
+    vec3 col = v_color * ( v_light * shape + u_daylight * sun * sh * 0.5 * min( v_light, 1.0 ) );
+    col = max( col, v_color * v_emissive );
+    float g = dot( col, vec3( 0.299, 0.587, 0.114 ) );
+    col = mix( col, vec3( g ) * vec3( 0.78, 0.86, 1.05 ), v_desat );
+    float d = length( v_world.xz - u_focus.xz );
+    float fog = smoothstep( u_fog_far * 0.72, u_fog_far, d );
+    col = mix( col, u_fog_color, fog );
+    frag = vec4( col, u_alpha );
+}
+)";
+
+const char *shadow_vs = R"(#version 330 core
+layout( location = 0 ) in vec3 a_pos;
+layout( location = 3 ) in vec4 i_pos;
+layout( location = 5 ) in vec4 i_extra;
+uniform mat4 u_light_vp;
+void main()
+{
+    float c = cos( i_pos.w );
+    float s = sin( i_pos.w );
+    vec3 p = ( a_pos - vec3( 0.5, 0.0, 0.5 ) ) * i_extra.x;
+    p = vec3( c * p.x - s * p.z, p.y, s * p.x + c * p.z ) + vec3( 0.5, 0.0, 0.5 );
+    gl_Position = u_light_vp * vec4( p + i_pos.xyz, 1.0 );
+}
+)";
+
+const char *shadow_fs = R"(#version 330 core
+void main()
+{
+}
+)";
+
+GLuint voxel_renderer::compile( const char *vs, const char *fs )
+{
+    voxel_gl_api &gl = voxel_gl();
+    const auto stage = [&gl]( GLenum type, const char *src ) -> GLuint {
+        const GLuint s = gl.glCreateShader( type );
+        gl.glShaderSource( s, 1, &src, nullptr );
+        gl.glCompileShader( s );
+        GLint ok = 0;
+        gl.glGetShaderiv( s, GL_COMPILE_STATUS, &ok );
+        if( !ok )
+        {
+            std::array<char, 2048> log{};
+            gl.glGetShaderInfoLog( s, static_cast<GLsizei>( log.size() ), nullptr, log.data() );
+            DebugLog( D_ERROR, D_SDL ) << "voxel shader compile failed: " << log.data();
+            gl.glDeleteShader( s );
+            return 0;
+        }
+        return s;
+    };
+    const GLuint v = stage( GL_VERTEX_SHADER, vs );
+    const GLuint f = stage( GL_FRAGMENT_SHADER, fs );
+    if( !v || !f ) {
+        return 0;
+    }
+    const GLuint p = gl.glCreateProgram();
+    gl.glAttachShader( p, v );
+    gl.glAttachShader( p, f );
+    gl.glLinkProgram( p );
+    gl.glDeleteShader( v );
+    gl.glDeleteShader( f );
+    GLint ok = 0;
+    gl.glGetProgramiv( p, GL_LINK_STATUS, &ok );
+    if( !ok ) {
+        std::array<char, 2048> log{};
+        gl.glGetProgramInfoLog( p, static_cast<GLsizei>( log.size() ), nullptr, log.data() );
+        DebugLog( D_ERROR, D_SDL ) << "voxel shader link failed: " << log.data();
+        gl.glDeleteProgram( p );
+        return 0;
+    }
+    return p;
+}
+
+bool voxel_renderer::init()
+{
+    SDL_GL_ResetAttributes();
+    SDL_GL_SetAttribute( SDL_GL_CONTEXT_MAJOR_VERSION, 3 );
+    SDL_GL_SetAttribute( SDL_GL_CONTEXT_MINOR_VERSION, 3 );
+    SDL_GL_SetAttribute( SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE );
+    SDL_GL_SetAttribute( SDL_GL_DEPTH_SIZE, 24 );
+    window = SDL_CreateWindow( "cataclysm-voxel", 64, 64, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN );
+    if( !window ) {
+        DebugLog( D_ERROR, D_SDL ) << "voxel window failed: " << SDL_GetError();
+        SDL_GL_ResetAttributes();
+        return false;
+    }
+    context = SDL_GL_CreateContext( window );
+    SDL_GL_ResetAttributes();
+    if( !context ) {
+        DebugLog( D_ERROR, D_SDL ) << "voxel GL context failed: " << SDL_GetError();
+        return false;
+    }
+    if( !voxel_gl().load() ) {
+        DebugLog( D_ERROR, D_SDL ) << "voxel GL functions missing";
+        return false;
+    }
+    voxel_gl_api &gl = voxel_gl();
+    main_program = compile( main_vs, main_fs );
+    shadow_program = compile( shadow_vs, shadow_fs );
+    if( !main_program || !shadow_program ) {
+        return false;
+    }
+    gl.glGenBuffers( 1, &instance_vbo );
+
+    GLint max_samples = 0;
+    gl.glGetIntegerv( GL_MAX_SAMPLES, &max_samples );
+    samples = std::clamp( max_samples, 1, 4 );
+
+    gl.glGenTextures( 1, &shadow_tex );
+    gl.glBindTexture( GL_TEXTURE_2D, shadow_tex );
+    gl.glTexImage2D( GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, shadow_size, shadow_size, 0,
+                     GL_DEPTH_COMPONENT, GL_FLOAT, nullptr );
+    gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+    gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+    gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+    gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+    gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE );
+    gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL );
+    gl.glGenFramebuffers( 1, &shadow_fbo );
+    gl.glBindFramebuffer( GL_FRAMEBUFFER, shadow_fbo );
+    gl.glFramebufferTexture2D( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, shadow_tex, 0 );
+    const bool shadow_ok = gl.glCheckFramebufferStatus( GL_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE;
+    gl.glBindFramebuffer( GL_FRAMEBUFFER, 0 );
+    if( !shadow_ok ) {
+        DebugLog( D_ERROR, D_SDL ) << "voxel shadow framebuffer incomplete";
+        return false;
+    }
+    return true;
+}
+
+bool voxel_renderer::ensure_targets( int w, int h )
+{
+    if( w == target_w && h == target_h && msaa_fbo != 0 ) {
+        return true;
+    }
+    voxel_gl_api &gl = voxel_gl();
+    if( msaa_fbo ) {
+        gl.glDeleteFramebuffers( 1, &msaa_fbo );
+        gl.glDeleteRenderbuffers( 1, &msaa_color );
+        gl.glDeleteRenderbuffers( 1, &msaa_depth );
+        gl.glDeleteFramebuffers( 1, &resolve_fbo );
+        gl.glDeleteRenderbuffers( 1, &resolve_color );
+    }
+    gl.glGenFramebuffers( 1, &msaa_fbo );
+    gl.glGenRenderbuffers( 1, &msaa_color );
+    gl.glGenRenderbuffers( 1, &msaa_depth );
+    gl.glBindFramebuffer( GL_FRAMEBUFFER, msaa_fbo );
+    gl.glBindRenderbuffer( GL_RENDERBUFFER, msaa_color );
+    gl.glRenderbufferStorageMultisample( GL_RENDERBUFFER, samples, GL_RGBA8, w, h );
+    gl.glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, msaa_color );
+    gl.glBindRenderbuffer( GL_RENDERBUFFER, msaa_depth );
+    gl.glRenderbufferStorageMultisample( GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, w, h );
+    gl.glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, msaa_depth );
+    const bool msaa_ok = gl.glCheckFramebufferStatus( GL_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE;
+
+    gl.glGenFramebuffers( 1, &resolve_fbo );
+    gl.glGenRenderbuffers( 1, &resolve_color );
+    gl.glBindFramebuffer( GL_FRAMEBUFFER, resolve_fbo );
+    gl.glBindRenderbuffer( GL_RENDERBUFFER, resolve_color );
+    gl.glRenderbufferStorage( GL_RENDERBUFFER, GL_RGBA8, w, h );
+    gl.glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER,
+                                  resolve_color );
+    const bool resolve_ok = gl.glCheckFramebufferStatus( GL_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE;
+    gl.glBindFramebuffer( GL_FRAMEBUFFER, 0 );
+    target_w = w;
+    target_h = h;
+    return msaa_ok && resolve_ok;
+}
+
+int voxel_renderer::model_for( const vm_key &key )
+{
+    const uint64_t packed = key.pack();
+    const auto it = model_lookup.find( packed );
+    if( it != model_lookup.end() ) {
+        return it->second;
+    }
+    voxel_gl_api &gl = voxel_gl();
+    const voxel_mesh mesh = build_voxel_mesh( make_voxel_model( key ) );
+    gpu_model model;
+    model.emissive = vm_is_emissive( key.kind );
+    const auto upload_mesh = [&gl]( const std::vector<voxel_vertex> &verts, gpu_mesh & out ) {
+        if( verts.empty() ) {
+            return;
+        }
+        gl.glGenVertexArrays( 1, &out.vao );
+        gl.glGenBuffers( 1, &out.vbo );
+        gl.glBindVertexArray( out.vao );
+        gl.glBindBuffer( GL_ARRAY_BUFFER, out.vbo );
+        gl.glBufferData( GL_ARRAY_BUFFER, static_cast<GLsizeiptr>( verts.size() * sizeof( voxel_vertex ) ),
+                         verts.data(), GL_STATIC_DRAW );
+        const GLsizei stride = sizeof( voxel_vertex );
+        gl.glEnableVertexAttribArray( 0 );
+        gl.glVertexAttribPointer( 0, 3, GL_FLOAT, GL_FALSE, stride, nullptr );
+        gl.glEnableVertexAttribArray( 1 );
+        gl.glVertexAttribPointer( 1, 3, GL_FLOAT, GL_FALSE, stride,
+                                  reinterpret_cast<void *>( 3 * sizeof( float ) ) );
+        gl.glEnableVertexAttribArray( 2 );
+        gl.glVertexAttribPointer( 2, 4, GL_FLOAT, GL_FALSE, stride,
+                                  reinterpret_cast<void *>( 6 * sizeof( float ) ) );
+        for( GLuint loc = 3; loc <= 5; ++loc ) {
+            gl.glEnableVertexAttribArray( loc );
+            gl.glVertexAttribDivisor( loc, 1 );
+        }
+        gl.glBindVertexArray( 0 );
+        out.count = static_cast<GLsizei>( verts.size() );
+    };
+    upload_mesh( mesh.opaque, model.opaque );
+    upload_mesh( mesh.glass, model.glass );
+    models.push_back( model );
+    const int idx = static_cast<int>( models.size() ) - 1;
+    model_lookup.emplace( packed, idx );
+    return idx;
+}
+
+void voxel_renderer::add( instance_lists &lists, const vm_key &key, const tripoint_bub_ms &p,
+                          float lift, float yaw, float light, float desat, float scale, const voxel_rgb &tint )
+{
+    const int m = model_for( key );
+    instance inst{};
+    inst.x = static_cast<float>( p.x() );
+    inst.y = static_cast<float>( p.z() ) * level_height + lift;
+    inst.z = static_cast<float>( p.y() );
+    inst.yaw = yaw;
+    inst.r = tint.r / 255.0f;
+    inst.g = tint.g / 255.0f;
+    inst.b = tint.b / 255.0f;
+    inst.light = light;
+    inst.scale = scale;
+    inst.emissive = models[m].emissive ? 1.0f : 0.0f;
+    inst.desat = desat;
+    lists.add( m, inst );
+}
+
+const tile_style &voxel_renderer::terrain_style( const ter_id &t )
+{
+    const auto it = ter_styles.find( t.to_i() );
+    if( it != ter_styles.end() ) {
+        return it->second;
+    }
+    return ter_styles.emplace( t.to_i(), classify_terrain( t.obj() ) ).first->second;
+}
+
+const tile_style &voxel_renderer::furniture_style( const furn_id &f )
+{
+    const auto it = furn_styles.find( f.to_i() );
+    if( it != furn_styles.end() ) {
+        return it->second;
+    }
+    return furn_styles.emplace( f.to_i(), classify_furniture( f.obj() ) ).first->second;
+}
+
+bool voxel_renderer::wall_like_at( const tripoint_bub_ms &p )
+{
+    map &here = get_map();
+    if( !here.inbounds( p ) ) {
+        return false;
+    }
+    const ter_t &t = here.ter( p ).obj();
+    return terrain_style( here.ter( p ) ).wall_like ||
+           t.has_flag( ter_furn_flag::TFLAG_CONNECT_WITH_WALL );
+}
+
+bool voxel_renderer::fence_like_at( const tripoint_bub_ms &p )
+{
+    map &here = get_map();
+    if( !here.inbounds( p ) ) {
+        return false;
+    }
+    if( terrain_style( here.ter( p ) ).fence || wall_like_at( p ) ) {
+        return true;
+    }
+    return here.has_furn( p ) && furniture_style( here.furn( p ) ).fence;
+}
+
+void voxel_renderer::add_style( const tile_style &st, const tripoint_bub_ms &p, float light,
+                                float desat, bool furniture )
+{
+    if( !st.draw ) {
+        return;
+    }
+    const uint32_t h = voxel_hash( p.x(), p.y(), p.z(), 1337u );
+    instance_lists &lists = drawing_shadow ? shadow_lists : main_lists;
+    if( st.overlay ) {
+        vm_key fk;
+        fk.kind = vm_kind::floor;
+        fk.material = st.floor_material;
+        fk.color = st.floor_color;
+        fk.variant = static_cast<uint8_t>( h % 4 );
+        add( lists, fk, p, 0.0f, static_cast<float>( ( h >> 8 ) % 4 ) * pi * 0.5f, light, desat );
+    }
+    vm_key k;
+    k.kind = st.kind;
+    k.material = st.material;
+    k.color = st.color;
+    k.color2 = st.color2;
+    k.variant = st.variants > 1 ? static_cast<uint8_t>( st.variant + h % st.variants ) : st.variant;
+    k.param = st.param;
+    if( st.oriented ) {
+        const bool ew = wall_like_at( p + tripoint_rel_ms::east ) || wall_like_at( p + tripoint_rel_ms::west );
+        const bool ns = wall_like_at( p + tripoint_rel_ms::north ) ||
+                        wall_like_at( p + tripoint_rel_ms::south );
+        k.param = ( ns && !ew ) ? 1 : 0;
+    }
+    if( st.fence ) {
+        uint8_t mask = 0;
+        mask |= fence_like_at( p + tripoint_rel_ms::north ) ? 1 : 0;
+        mask |= fence_like_at( p + tripoint_rel_ms::east ) ? 2 : 0;
+        mask |= fence_like_at( p + tripoint_rel_ms::south ) ? 4 : 0;
+        mask |= fence_like_at( p + tripoint_rel_ms::west ) ? 8 : 0;
+        k.param = mask;
+    }
+    if( st.stripes ) {
+        map &here = get_map();
+        const ter_id self = here.ter( p );
+        const bool ns = ( here.inbounds( p + tripoint_rel_ms::north ) &&
+                          here.ter( p + tripoint_rel_ms::north ) == self ) ||
+                        ( here.inbounds( p + tripoint_rel_ms::south ) && here.ter( p + tripoint_rel_ms::south ) == self );
+        k.param = ns ? 1 : 2;
+    }
+    const float yaw = st.spin ? static_cast<float>( ( h >> 4 ) % 4 ) * pi * 0.5f : 0.0f;
+    float lift = furniture ? voxel_size : 0.0f;
+    if( st.kind == vm_kind::fire ) {
+        lift = voxel_size;
+    }
+    add( lists, k, p, lift, yaw, light, desat );
+}
+
+float light_value( float ambient, lit_level ll )
+{
+    float b = 0.2f + 0.85f * std::clamp( std::sqrt( std::max( ambient, 0.0f ) / 90.0f ), 0.0f, 1.0f );
+    if( ll == lit_level::LOW ) {
+        b = std::min( b, 0.42f );
+    } else if( ll == lit_level::BRIGHT ) {
+        b = std::max( b, 0.95f );
+    }
+    return std::clamp( b, 0.22f, 1.1f );
+}
+
+void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float daylight )
+{
+    map &here = get_map();
+    avatar &you = get_avatar();
+    const visibility_variables &cache = here.get_visibility_variables_cache();
+    main_lists.clear();
+    shadow_lists.clear();
+    drawing_shadow = false;
+
+    const int x0 = std::max( 0, center.x() - radius );
+    const int x1 = std::min( MAPSIZE_X - 1, center.x() + radius );
+    const int y0 = std::max( 0, center.y() - radius );
+    const int y1 = std::min( MAPSIZE_Y - 1, center.y() + radius );
+    const int min_z = std::max( -OVERMAP_DEPTH, center.z() - 3 );
+    const float memory_light = 0.42f;
+    const float memory_desat = 0.75f;
+
+    for( int y = y0; y <= y1; ++y ) {
+        for( int x = x0; x <= x1; ++x ) {
+            for( int z = center.z(); z >= min_z; --z ) {
+                const tripoint_bub_ms p( x, y, z );
+                const level_cache &lc = here.access_cache( z );
+                const lit_level ll = lc.visibility_cache[x][y];
+                const bool seen = here.get_visibility( ll, cache ) == visibility_type::CLEAR;
+                const ter_id ter = here.ter( p );
+                const tile_style &ts = terrain_style( ter );
+                if( seen ) {
+                    const float light = light_value( here.ambient_light_at( p ), ll );
+                    add_style( ts, p, light, 0.0f, false );
+                    if( here.has_furn( p ) ) {
+                        add_style( furniture_style( here.furn( p ) ), p, light, 0.0f, true );
+                    }
+                    const optional_vpart_position ovp = here.veh_at( p );
+                    if( ovp ) {
+                        const vehicle &veh = ovp->vehicle();
+                        const vpart_display vd = veh.get_display_of_tile( ovp->mount_pos() );
+                        if( !vd.id.is_null() ) {
+                            const vpart_info &info = vd.id.obj();
+                            vm_key vk;
+                            vk.color = soften( to_rgb( vd.color ) );
+                            vk.color2 = voxel_shade( vk.color, 0.85f );
+                            if( info.has_flag( VPFLAG_WHEEL ) ) {
+                                vk.kind = vm_kind::veh_wheel;
+                            } else if( info.has_flag( VPFLAG_WINDOW ) ) {
+                                vk.kind = vm_kind::veh_window;
+                            } else if( info.has_flag( VPFLAG_OPAQUE ) && info.has_flag( VPFLAG_OBSTACLE ) ) {
+                                vk.kind = vm_kind::veh_body;
+                            } else if( info.has_flag( "SEAT" ) || info.has_flag( "BED" ) ) {
+                                vk.kind = vm_kind::veh_seat;
+                                vk.color2 = rgb( 70, 60, 55 );
+                            } else if( info.has_flag( VPFLAG_ENGINE ) || info.has_flag( VPFLAG_CARGO ) ||
+                                       info.has_flag( VPFLAG_FLUIDTANK ) || info.has_flag( VPFLAG_TURRET_CONTROLS ) ) {
+                                vk.kind = vm_kind::veh_part;
+                            } else {
+                                vk.kind = vm_kind::veh_frame;
+                            }
+                            const float yaw = static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f;
+                            add( main_lists, vk, p, 0.0f, yaw, light, 0.0f );
+                        }
+                    }
+                    if( here.has_items( p ) ) {
+                        map_stack stack = here.i_at( p );
+                        int count = 0;
+                        nc_color top = c_white;
+                        for( const item &it : stack ) {
+                            if( count == 0 ) {
+                                top = it.color();
+                            }
+                            ++count;
+                        }
+                        vm_key ik;
+                        ik.kind = vm_kind::item_pile;
+                        ik.variant = static_cast<uint8_t>( std::min( count, 3 ) - 1 + 3 * ( voxel_hash( x, y, z,
+                                                           5 ) % 3 ) );
+                        const float lift = ovp ? voxel_size * 4.0f : furniture_style( here.furn( p ) ).kind ==
+                                           vm_kind::table && here.has_furn( p ) ? voxel_size * 6.0f : voxel_size;
+                        add( main_lists, ik, p, lift, 0.0f, light, 0.0f, 1.0f, soften( to_rgb( top ) ) );
+                    }
+                    const field &fld = here.field_at( p );
+                    const field_type_id ftype = fld.displayed_field_type();
+                    if( ftype ) {
+                        const field_entry *fe = fld.find_field( ftype );
+                        if( fe ) {
+                            const std::string fid = ftype.id().str();
+                            const int intensity = std::clamp( fe->get_field_intensity(), 1, 3 );
+                            vm_key fk;
+                            fk.color = soften( to_rgb( fe->color() ) );
+                            float lift = voxel_size;
+                            bool draw = true;
+                            if( has_any( fid, "fire", "flame", "incendiary" ) ) {
+                                fk.kind = vm_kind::fire;
+                                fk.variant = static_cast<uint8_t>( intensity - 1 );
+                            } else if( has_any( fid, "blood", "bile", "gibs", "acid", "slime", "sap", "sludge", "oil",
+                                                "juice", "goo", "mess" ) ) {
+                                fk.kind = vm_kind::splat;
+                                fk.variant = static_cast<uint8_t>( voxel_hash( x, y, z, 9 ) % 4 );
+                            } else if( has_any( fid, "smoke", "gas", "fog", "mist", "haze", "cloud", "toxic", "tear",
+                                                "miasma", "relax", "nuke", "fume", "steam" ) ) {
+                                fk.kind = vm_kind::cloud;
+                                fk.variant = static_cast<uint8_t>( intensity );
+                                lift = 0.0f;
+                            } else {
+                                draw = false;
+                            }
+                            if( draw ) {
+                                add( main_lists, fk, p, lift, 0.0f, light, 0.0f );
+                            }
+                        }
+                    }
+                } else {
+                    const tripoint_abs_ms abs = here.get_abs( p );
+                    if( you.has_memory_at( abs ) ) {
+                        const memorized_tile &mt = you.get_memorized_tile( abs );
+                        const ter_str_id tid( mt.get_ter_id() );
+                        if( !mt.get_ter_id().empty() && tid.is_valid() ) {
+                            add_style( terrain_style( tid.id() ), p, memory_light, memory_desat, false );
+                        }
+                        const std::string &dec = mt.get_dec_id();
+                        if( dec.compare( 0, 2, "f_" ) == 0 ) {
+                            const furn_str_id fid( dec );
+                            if( fid.is_valid() ) {
+                                add_style( furniture_style( fid.id() ), p, memory_light, memory_desat, true );
+                            }
+                        } else if( dec.compare( 0, 3, "vp_" ) == 0 ) {
+                            vm_key vk;
+                            vk.kind = vm_kind::veh_frame;
+                            vk.color = rgb( 120, 120, 125 );
+                            add( main_lists, vk, p, 0.0f, 0.0f, memory_light, memory_desat );
+                        }
+                    }
+                }
+                if( !ts.no_floor ) {
+                    break;
+                }
+            }
+        }
+    }
+
+    if( daylight > 0.02f && center.z() < OVERMAP_HEIGHT ) {
+        drawing_shadow = true;
+        const int sr = radius + 6;
+        for( int up = 1; up <= 2; ++up ) {
+            const int z = center.z() + up;
+            if( z > OVERMAP_HEIGHT ) {
+                break;
+            }
+            for( int y = std::max( 0, center.y() - sr ); y <= std::min( MAPSIZE_Y - 1, center.y() + sr ); ++y ) {
+                for( int x = std::max( 0, center.x() - sr ); x <= std::min( MAPSIZE_X - 1, center.x() + sr ); ++x ) {
+                    const tripoint_bub_ms p( x, y, z );
+                    const tile_style &ts = terrain_style( here.ter( p ) );
+                    if( ts.no_floor ) {
+                        continue;
+                    }
+                    if( ts.kind == vm_kind::wall || ts.kind == vm_kind::window || ts.kind == vm_kind::door ) {
+                        vm_key k;
+                        k.kind = vm_kind::wall;
+                        add( shadow_lists, k, p, 0.0f, 0.0f, 1.0f, 0.0f );
+                    } else {
+                        vm_key k;
+                        k.kind = vm_kind::floor;
+                        add( shadow_lists, k, p, 0.0f, 0.0f, 1.0f, 0.0f );
+                    }
+                }
+            }
+        }
+        drawing_shadow = false;
+    }
+
+    const tripoint_bub_ms you_pos = you.pos_bub( here );
+    if( you_pos != last_avatar_pos ) {
+        const point d = ( you_pos.xy() - last_avatar_pos.xy() ).raw();
+        if( d != point::zero && std::abs( d.x ) <= 1 && std::abs( d.y ) <= 1 ) {
+            avatar_yaw = std::atan2( static_cast<float>( d.x ), static_cast<float>( -d.y ) );
+        }
+        last_avatar_pos = you_pos;
+    }
+
+    const auto in_view = [&]( const tripoint_bub_ms & p ) {
+        return p.z() <= center.z() && p.z() >= min_z && std::abs( p.x() - center.x() ) <= radius &&
+               std::abs( p.y() - center.y() ) <= radius;
+    };
+    const auto face_towards = []( const tripoint_bub_ms & from, const tripoint_bub_ms & to ) {
+        const point d = ( to.xy() - from.xy() ).raw();
+        if( d == point::zero ) {
+            return 0.0f;
+        }
+        return std::atan2( static_cast<float>( d.x ), static_cast<float>( -d.y ) );
+    };
+    const auto creature_light = [&]( const tripoint_bub_ms & p ) {
+        const lit_level ll = here.access_cache( p.z() ).visibility_cache[p.x()][p.y()];
+        return std::max( light_value( here.ambient_light_at( p ), ll ), 0.5f );
+    };
+
+    if( in_view( you_pos ) ) {
+        vm_key k;
+        k.kind = vm_kind::humanoid;
+        k.color = rgb( 226, 184, 146 );
+        k.color2 = rgb( 58, 98, 168 );
+        k.param = 1;
+        add( main_lists, k, you_pos, voxel_size, avatar_yaw, creature_light( you_pos ), 0.0f,
+             size_scale( you.get_size() ) );
+    }
+    for( const npc &guy : g->all_npcs() ) {
+        const tripoint_bub_ms p = guy.pos_bub( here );
+        if( !in_view( p ) || !you.sees( here, guy ) ) {
+            continue;
+        }
+        const uint32_t h = string_hash( guy.get_name() );
+        vm_key k;
+        k.kind = vm_kind::humanoid;
+        k.color = palette_pick( skin_palette(), h );
+        k.color2 = palette_pick( shirt_palette(), h >> 5 );
+        k.variant = static_cast<uint8_t>( h % 3 );
+        add( main_lists, k, p, voxel_size, face_towards( p, you_pos ), creature_light( p ), 0.0f,
+             size_scale( guy.get_size() ) );
+    }
+    for( const monster &mon : g->all_monsters() ) {
+        const tripoint_bub_ms p = mon.pos_bub( here );
+        if( !in_view( p ) || !you.sees( here, mon ) ) {
+            continue;
+        }
+        add( main_lists, monster_key( mon ), p, voxel_size, face_towards( p, you_pos ),
+             creature_light( p ), 0.0f, size_scale( mon.get_size() ) );
+    }
+
+    if( center != you_pos ) {
+        vm_key k;
+        k.kind = vm_kind::cursor;
+        k.color = rgb( 255, 220, 60 );
+        add( main_lists, k, center, 0.0f, 0.0f, 1.0f, 0.0f );
+    }
+}
+
+void voxel_renderer::upload_instances( instance_lists &main, instance_lists &extra )
+{
+    voxel_gl_api &gl = voxel_gl();
+    upload.clear();
+    main_ranges.assign( models.size(), { 0, 0 } );
+    extra_ranges.assign( models.size(), { 0, 0 } );
+    for( int m : main.touched ) {
+        main_ranges[m] = { upload.size(), main.per_model[m].size() };
+        upload.insert( upload.end(), main.per_model[m].begin(), main.per_model[m].end() );
+    }
+    for( int m : extra.touched ) {
+        extra_ranges[m] = { upload.size(), extra.per_model[m].size() };
+        upload.insert( upload.end(), extra.per_model[m].begin(), extra.per_model[m].end() );
+    }
+    gl.glBindBuffer( GL_ARRAY_BUFFER, instance_vbo );
+    gl.glBufferData( GL_ARRAY_BUFFER, static_cast<GLsizeiptr>( upload.size() * sizeof( instance ) ),
+                     upload.empty() ? nullptr : upload.data(), GL_STREAM_DRAW );
+}
+
+void voxel_renderer::draw_pass( instance_lists &lists, bool glass, GLuint program )
+{
+    voxel_gl_api &gl = voxel_gl();
+    gl.glUseProgram( program );
+    const auto draw_range = [&]( int m, const std::pair<size_t, size_t> &range ) {
+        if( range.second == 0 ) {
+            return;
+        }
+        const gpu_mesh &mesh = glass ? models[m].glass : models[m].opaque;
+        if( mesh.count == 0 ) {
+            return;
+        }
+        gl.glBindVertexArray( mesh.vao );
+        gl.glBindBuffer( GL_ARRAY_BUFFER, instance_vbo );
+        const GLsizei stride = sizeof( instance );
+        const size_t base = range.first * sizeof( instance );
+        gl.glVertexAttribPointer( 3, 4, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>( base ) );
+        gl.glVertexAttribPointer( 4, 4, GL_FLOAT, GL_FALSE, stride,
+                                  reinterpret_cast<void *>( base + 4 * sizeof( float ) ) );
+        gl.glVertexAttribPointer( 5, 4, GL_FLOAT, GL_FALSE, stride,
+                                  reinterpret_cast<void *>( base + 8 * sizeof( float ) ) );
+        gl.glDrawArraysInstanced( GL_TRIANGLES, 0, mesh.count, static_cast<GLsizei>( range.second ) );
+    };
+    const bool shadow = &lists == &shadow_lists;
+    for( int m : lists.touched ) {
+        draw_range( m, shadow ? extra_ranges[m] : main_ranges[m] );
+    }
+    if( shadow ) {
+        for( int m : main_lists.touched ) {
+            draw_range( m, main_ranges[m] );
+        }
+    }
+    gl.glBindVertexArray( 0 );
+}
+
+bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int height,
+                             std::vector<uint8_t> &pixels )
+{
+    if( failed || width <= 0 || height <= 0 ) {
+        return false;
+    }
+    SDL_Window *prev_window = SDL_GL_GetCurrentWindow();
+    SDL_GLContext prev_context = SDL_GL_GetCurrentContext();
+    if( !initialized ) {
+        initialized = true;
+        if( !init() ) {
+            failed = true;
+            if( prev_context ) {
+                SDL_GL_MakeCurrent( prev_window, prev_context );
+            }
+            return false;
+        }
+    } else if( !SDL_GL_MakeCurrent( window, context ) ) {
+        failed = true;
+        return false;
+    }
+    voxel_gl_api &gl = voxel_gl();
+    if( !ensure_targets( width, height ) ) {
+        failed = true;
+        if( prev_context ) {
+            SDL_GL_MakeCurrent( prev_window, prev_context );
+        }
+        return false;
+    }
+
+    const float zoom = static_cast<float>( std::max( uistate.tileset_zoom, 1 ) );
+    const float distance = std::clamp( 24.0f * 16.0f / zoom, 6.0f, 110.0f );
+    const int radius = std::clamp( static_cast<int>( distance * 1.25f ) + 10, 16, 62 );
+
+    const float hour = to_hours<float>( time_past_midnight( calendar::turn ) );
+    const float natural = g->natural_light_level( center.z() );
+    const float daylight = center.z() >= 0 ? std::clamp( ( natural - 15.0f ) / 70.0f, 0.0f, 1.0f ) : 0.0f;
+    const float sun_angle = std::clamp( ( hour - 6.0f ) / 12.0f, 0.08f, 0.92f ) * pi;
+    const vec3 sun_dir = normalize( { std::cos( sun_angle ), std::sin( sun_angle ) * 1.3f + 0.25f, 0.45f } );
+
+    collect( center, radius, daylight );
+    upload_instances( main_lists, shadow_lists );
+
+    const vec3 focus = { center.x() + 0.5f, center.z() * level_height + 0.6f, center.y() + 0.5f };
+    const vec3 offset = { std::sin( cam.yaw ) * std::cos( cam.pitch ), std::sin( cam.pitch ), std::cos( cam.yaw ) * std::cos( cam.pitch ) };
+    const vec3 eye = focus + offset * distance;
+    const mat4 proj = perspective( 0.7f, static_cast<float>( width ) / static_cast<float>( height ), 0.5f,
+                                   distance * 4.0f + 80.0f );
+    const mat4 view = look_at( eye, focus, { 0.0f, 1.0f, 0.0f } );
+    const mat4 view_proj = proj * view;
+    mat4 flip = mat4::identity();
+    flip.m[5] = -1.0f;
+    const mat4 flipped = flip * view_proj;
+    cam.view_proj = view_proj;
+    cam.width = width;
+    cam.height = height;
+    cam.center_z = center.z();
+    cam.valid = true;
+
+    const float extent = static_cast<float>( radius ) + 6.0f;
+    const vec3 sun_up = std::fabs( sun_dir.y ) > 0.95f ? vec3{ 0.0f, 0.0f, 1.0f } : vec3{ 0.0f, 1.0f, 0.0f };
+    const mat4 light_vp = ortho( -extent, extent, -extent, extent, 1.0f, 200.0f ) *
+                          look_at( focus + sun_dir * 90.0f, focus, sun_up );
+    const bool use_shadow = daylight > 0.02f && get_option<bool>( "VOXEL_SHADOWS" );
+
+    gl.glEnable( GL_DEPTH_TEST );
+    gl.glDepthFunc( GL_LEQUAL );
+    gl.glEnable( GL_CULL_FACE );
+    gl.glCullFace( GL_BACK );
+
+    if( use_shadow ) {
+        gl.glBindFramebuffer( GL_FRAMEBUFFER, shadow_fbo );
+        gl.glViewport( 0, 0, shadow_size, shadow_size );
+        gl.glClear( GL_DEPTH_BUFFER_BIT );
+        gl.glFrontFace( GL_CCW );
+        gl.glEnable( GL_POLYGON_OFFSET_FILL );
+        gl.glPolygonOffset( 1.5f, 3.0f );
+        gl.glUseProgram( shadow_program );
+        gl.glUniformMatrix4fv( gl.glGetUniformLocation( shadow_program, "u_light_vp" ), 1, GL_FALSE,
+                               light_vp.m.data() );
+        gl.glDisable( GL_CULL_FACE );
+        draw_pass( shadow_lists, false, shadow_program );
+        gl.glEnable( GL_CULL_FACE );
+        gl.glDisable( GL_POLYGON_OFFSET_FILL );
+    }
+
+    gl.glBindFramebuffer( GL_FRAMEBUFFER, msaa_fbo );
+    gl.glViewport( 0, 0, width, height );
+    const vec3 fog = center.z() < 0 ? vec3{ 0.0f, 0.0f, 0.0f } : vec3{ 0.02f + 0.16f * daylight, 0.025f + 0.2f * daylight, 0.04f + 0.25f * daylight };
+    gl.glClearColor( fog.x, fog.y, fog.z, 1.0f );
+    gl.glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+    gl.glFrontFace( GL_CW );
+
+    gl.glUseProgram( main_program );
+    gl.glUniformMatrix4fv( gl.glGetUniformLocation( main_program, "u_vp" ), 1, GL_FALSE,
+                           flipped.m.data() );
+    gl.glUniformMatrix4fv( gl.glGetUniformLocation( main_program, "u_light_vp" ), 1, GL_FALSE,
+                           light_vp.m.data() );
+    gl.glUniform3f( gl.glGetUniformLocation( main_program, "u_sun" ), sun_dir.x, sun_dir.y, sun_dir.z );
+    gl.glUniform1f( gl.glGetUniformLocation( main_program, "u_daylight" ), daylight );
+    gl.glUniform1f( gl.glGetUniformLocation( main_program, "u_use_shadow" ), use_shadow ? 1.0f : 0.0f );
+    gl.glUniform3f( gl.glGetUniformLocation( main_program, "u_focus" ), focus.x, focus.y, focus.z );
+    gl.glUniform1f( gl.glGetUniformLocation( main_program, "u_fog_far" ), static_cast<float>( radius ) );
+    gl.glUniform3f( gl.glGetUniformLocation( main_program, "u_fog_color" ), fog.x, fog.y, fog.z );
+    gl.glUniform1f( gl.glGetUniformLocation( main_program, "u_alpha" ), 1.0f );
+    gl.glActiveTexture( GL_TEXTURE0 );
+    gl.glBindTexture( GL_TEXTURE_2D, shadow_tex );
+    gl.glUniform1i( gl.glGetUniformLocation( main_program, "u_shadow" ), 0 );
+
+    draw_pass( main_lists, false, main_program );
+
+    gl.glEnable( GL_BLEND );
+    gl.glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+    gl.glDepthMask( GL_FALSE );
+    gl.glDisable( GL_CULL_FACE );
+    gl.glUniform1f( gl.glGetUniformLocation( main_program, "u_alpha" ), 0.45f );
+    draw_pass( main_lists, true, main_program );
+    gl.glDepthMask( GL_TRUE );
+    gl.glDisable( GL_BLEND );
+
+    gl.glBindFramebuffer( GL_READ_FRAMEBUFFER, msaa_fbo );
+    gl.glBindFramebuffer( GL_DRAW_FRAMEBUFFER, resolve_fbo );
+    gl.glBlitFramebuffer( 0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST );
+    gl.glBindFramebuffer( GL_FRAMEBUFFER, resolve_fbo );
+    gl.glReadBuffer( GL_COLOR_ATTACHMENT0 );
+    pixels.resize( static_cast<size_t>( width ) * height * 4 );
+    gl.glPixelStorei( GL_PACK_ALIGNMENT, 1 );
+    gl.glReadPixels( 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data() );
+    gl.glBindFramebuffer( GL_FRAMEBUFFER, 0 );
+
+    if( prev_context ) {
+        SDL_GL_MakeCurrent( prev_window, prev_context );
+    }
+    return true;
+}
+
+void voxel_renderer::shutdown()
+{
+    if( context ) {
+        SDL_GL_DestroyContext( context );
+        context = nullptr;
+    }
+    if( window ) {
+        SDL_DestroyWindow( window );
+        window = nullptr;
+    }
+    models.clear();
+    model_lookup.clear();
+    initialized = false;
+    target_w = 0;
+    target_h = 0;
+    msaa_fbo = 0;
+}
+
+voxel_renderer &renderer()
+{
+    static voxel_renderer r;
+    return r;
+}
+
+int yaw_octant()
+{
+    const float steps = cam.yaw / ( pi / 4.0f );
+    int k = static_cast<int>( std::lround( steps ) ) % 8;
+    if( k < 0 ) {
+        k += 8;
+    }
+    return k;
+}
+
+point_rel_ms rotate_octants( const point_rel_ms &d, int k )
+{
+    static const std::array<point, 8> ring = { {
+            point::north, point::north_east, point::east, point::south_east,
+            point::south, point::south_west, point::west, point::north_west
+        }
+    };
+    for( int i = 0; i < 8; ++i ) {
+        if( ring[i] == d.raw() ) {
+            return point_rel_ms( ring[( i + k + 8 ) % 8] );
+        }
+    }
+    return d;
+}
+
+} // namespace
+
+namespace voxel_view
+{
+
+bool active()
+{
+    return use_tiles && get_option<bool>( "VOXEL_VIEW" ) && !renderer().failed;
+}
+
+bool render( const tripoint_bub_ms &center, int width, int height, std::vector<uint8_t> &pixels )
+{
+    return renderer().render( center, width, height, pixels );
+}
+
+void orbit( float dx, float dy )
+{
+    cam.yaw -= dx * 0.008f;
+    cam.pitch = std::clamp( cam.pitch + dy * 0.006f, 0.35f, 1.5f );
+}
+
+std::optional<tripoint_bub_ms> pick( const point &pixel, const point &size )
+{
+    if( !cam.valid || size.x <= 0 || size.y <= 0 ) {
+        return std::nullopt;
+    }
+    mat4 inv;
+    if( !invert( cam.view_proj, inv ) ) {
+        return std::nullopt;
+    }
+    const float nx = 2.0f * ( pixel.x + 0.5f ) / size.x - 1.0f;
+    const float ny = 1.0f - 2.0f * ( pixel.y + 0.5f ) / size.y;
+    const auto unproject = [&inv]( float x, float y, float z ) {
+        const std::array<float, 4> v = { x, y, z, 1.0f };
+        std::array<float, 4> r = { 0.0f, 0.0f, 0.0f, 0.0f };
+        for( int row = 0; row < 4; ++row ) {
+            for( int k = 0; k < 4; ++k ) {
+                r[row] += inv.m[k * 4 + row] * v[k];
+            }
+        }
+        return vec3{ r[0] / r[3], r[1] / r[3], r[2] / r[3] };
+    };
+    const vec3 a = unproject( nx, ny, -1.0f );
+    const vec3 b = unproject( nx, ny, 1.0f );
+    const vec3 dir = b - a;
+    const float plane = cam.center_z * level_height + voxel_size;
+    if( std::fabs( dir.y ) < 1e-6f ) {
+        return std::nullopt;
+    }
+    const float t = ( plane - a.y ) / dir.y;
+    if( t < 0.0f ) {
+        return std::nullopt;
+    }
+    const vec3 hit = a + dir * t;
+    return tripoint_bub_ms( static_cast<int>( std::floor( hit.x ) ), static_cast<int>( std::floor(
+                                hit.z ) ), cam.center_z );
+}
+
+point_rel_ms screen_to_map( const point_rel_ms &d )
+{
+    return rotate_octants( d, -yaw_octant() );
+}
+
+point_rel_ms map_to_screen( const point_rel_ms &d )
+{
+    return rotate_octants( d, yaw_octant() );
+}
+
+void shutdown()
+{
+    renderer().shutdown();
+}
+
+} // namespace voxel_view
+
+#else
+
+namespace voxel_view
+{
+
+bool active()
+{
+    return false;
+}
+
+bool render( const tripoint_bub_ms &, int, int, std::vector<uint8_t> & )
+{
+    return false;
+}
+
+void orbit( float, float )
+{
+}
+
+std::optional<tripoint_bub_ms> pick( const point &, const point & )
+{
+    return std::nullopt;
+}
+
+point_rel_ms screen_to_map( const point_rel_ms &d )
+{
+    return d;
+}
+
+point_rel_ms map_to_screen( const point_rel_ms &d )
+{
+    return d;
+}
+
+void shutdown()
+{
+}
+
+} // namespace voxel_view
+
+#endif
