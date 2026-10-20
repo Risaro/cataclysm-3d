@@ -1760,7 +1760,7 @@ float shadow_at()
 void main()
 {
     vec3 n = normalize( v_normal );
-    float shape = 0.6 + 0.3 * n.y + 0.07 * n.x - 0.05 * n.z;
+    float shape = ( n.y >= 0.0 ? 0.6 + 0.3 * n.y : 0.6 - 0.08 * n.y ) + 0.07 * n.x - 0.05 * n.z;
     float sun = max( dot( n, u_sun ), 0.0 );
     float sh = u_use_shadow > 0.5 ? shadow_at() : 1.0;
     vec3 col = v_color * ( v_light * shape + u_daylight * sun * sh * 0.5 * min( v_light, 1.0 ) );
@@ -1855,7 +1855,8 @@ void main()
         float r = radius * sqrt( ( float( i ) + 0.5 ) / float( samples ) );
         vec2 uv = v_uv + vec2( cos( a ), sin( a ) ) * r * u_texel;
         float diff = center - linear_depth( uv );
-        if( diff > 0.03 && diff < 1.6 ) {
+        float bias = 0.05 + center * 0.02;
+        if( diff > bias && diff < 1.6 ) {
             occlusion += 1.0 - diff / 1.6;
         }
     }
@@ -2078,7 +2079,8 @@ void main()
         discard;
     }
     vec3 n = normalize( v_normal );
-    float shape = u_mode == 0 ? 0.82 : 0.62 + 0.3 * n.y + 0.06 * n.x - 0.04 * n.z;
+    float shape = u_mode == 0 ? 0.82 : ( n.y >= 0.0 ? 0.62 + 0.3 * n.y : 0.62 - 0.08 * n.y ) + 0.06 * n.x -
+                  0.04 * n.z;
     float sun = u_mode == 0 ? 0.55 : max( dot( n, u_sun ), 0.0 );
     float sh = u_use_shadow > 0.5 ? shadow_at() : 1.0;
     vec3 col = t.rgb * ( v_light * shape + u_daylight * sun * sh * 0.45 * min( v_light, 1.0 ) );
@@ -3824,22 +3826,22 @@ void voxel_renderer::add_distant_terrain( const tripoint_bub_ms &you_pos, float 
             bool forest = false;
             bool building = false;
             if( has_any( id, "forest", "swamp" ) ) {
-                ground.color = rgb( 58, 96, 46 );
+                ground.color = rgb( 72, 116, 50 );
                 forest = true;
             } else if( has_any( id, "river", "lake", "water", "ocean", "pond" ) ) {
                 ground.color = rgb( 52, 96, 150 );
             } else if( has_any( id, "road", "highway", "hiway", "bridge", "parking" ) ) {
                 ground.color = rgb( 66, 66, 70 );
             } else if( has_any( id, "field", "farm", "meadow", "grass" ) ) {
-                ground.color = rgb( 104, 146, 66 );
+                ground.color = rgb( 84, 130, 54 );
             } else if( has_any( id, "beach", "sand", "desert" ) ) {
                 ground.color = rgb( 205, 185, 130 );
             } else {
-                ground.color = rgb( 118, 128, 108 );
+                ground.color = rgb( 96, 120, 74 );
                 building = true;
             }
             const vec3 center_pos{ bx + omt_size * 0.5f - 0.5f, 0.0f, by + omt_size * 0.5f - 0.5f };
-            add_at( main_lists, ground, center_pos, -static_cast<float>( omt_size ) * voxel_size - 0.06f, 0.0f,
+            add_at( main_lists, ground, center_pos, -static_cast<float>( omt_size ) * voxel_size + 0.1f, 0.0f,
                     light, 0.0f, static_cast<float>( omt_size ) );
             if( forest ) {
                 for( int i = 0; i < 9; ++i ) {
