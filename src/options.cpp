@@ -2569,6 +2569,13 @@ void options_manager::add_options_graphics()
 
         get_option( "VOXEL_SHADOWS" ).setPrerequisite( "VOXEL_VIEW" );
 
+        add( "VOXEL_CUTAWAY", page_id, to_translation( "3D wall cutaway" ),
+             to_translation( "If true, walls and trees between the camera and your character are cut down so they never hide you." ),
+             true, COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_CUTAWAY" ).setPrerequisite( "VOXEL_VIEW" );
+
         std::vector<id_and_option> voxelsets = { { "builtin", to_translation( "Built-in procedural models" ) } };
         for( const std::pair<std::string, std::string> &vs : list_voxelsets() ) {
             voxelsets.emplace_back( vs.first, no_translation( vs.second ) );

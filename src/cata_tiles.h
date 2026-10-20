@@ -948,6 +948,7 @@ class cata_tiles
             flush_sprite_shader_for_untextured_draw();
         }
         void export_voxel_overlays( voxel_view::overlays &out ) const;
+        std::optional<point_bub_ms> screen_to_tile_pos( const point &screen ) const;
 
         // Animation layers
         void init_explosion( const tripoint_bub_ms &p, int radius );

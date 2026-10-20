@@ -4127,15 +4127,16 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &w )
 
         // game::w_terrain can be drawn by the tilecontext.
         // skip the normal drawing code for it.
+        const bool voxel = voxel_view::active();
         tilecontext->draw(
             point( win->pos.x * fontwidth, win->pos.y * fontheight ),
             g->ter_view_p,
-            TERRAIN_WINDOW_TERM_WIDTH * font->width,
-            TERRAIN_WINDOW_TERM_HEIGHT * font->height,
+            voxel ? tilecontext->get_tile_width() : TERRAIN_WINDOW_TERM_WIDTH * font->width,
+            voxel ? tilecontext->get_tile_height() : TERRAIN_WINDOW_TERM_HEIGHT * font->height,
             overlay_strings,
             color_blocks );
 
-        if( voxel_view::active() ) {
+        if( voxel ) {
             const int vw = TERRAIN_WINDOW_TERM_WIDTH * font->width;
             const int vh = TERRAIN_WINDOW_TERM_HEIGHT * font->height;
             voxel_view::overlays state;
@@ -4154,6 +4155,20 @@ void cata_cursesport::curses_drawwindow( const catacurses::window &w )
                     RenderCopy( renderer, voxel_texture, nullptr, &dst );
                 }
             }
+            std::multimap<point, formatted_text> projected;
+            for( const std::pair<const point, formatted_text> &entry : overlay_strings ) {
+                const std::optional<point_bub_ms> tile = tilecontext->screen_to_tile_pos( entry.first );
+                if( !tile ) {
+                    continue;
+                }
+                const std::optional<point> at = voxel_view::project( tripoint_bub_ms( *tile, g->ter_view_p.z() ),
+                                                1.6f );
+                if( at ) {
+                    projected.emplace( *at, entry.second );
+                }
+            }
+            overlay_strings = std::move( projected );
+            color_blocks.second.clear();
         }
 
         // color blocks overlay
@@ -6255,6 +6270,37 @@ static void CheckMessages()
         } else {
             switch( ev.type ) {
                 case CATA_KEYDOWN: {
+                    if( voxel_view::active() && ( ev.key.mod & SDL_KMOD_ALT ) ) {
+                        bool camera_key = true;
+                        switch( ev.key.key ) {
+                            case SDLK_LEFT:
+                                voxel_view::rotate_step( -1 );
+                                break;
+                            case SDLK_RIGHT:
+                                voxel_view::rotate_step( 1 );
+                                break;
+                            case SDLK_UP:
+                                voxel_view::tilt_step( 1 );
+                                break;
+                            case SDLK_DOWN:
+                                voxel_view::tilt_step( -1 );
+                                break;
+                            case SDLK_HOME:
+                                voxel_view::reset_camera();
+                                break;
+                            default:
+                                camera_key = false;
+                                break;
+                        }
+                        if( camera_key ) {
+                            if( g ) {
+                                g->invalidate_main_ui_adaptor();
+                            }
+                            ui_manager::redraw_invalidated();
+                            refresh_display();
+                            break;
+                        }
+                    }
 #if defined(__ANDROID__)
                     // Toggle virtual keyboard with Android back button. For some reason I get double inputs, so ignore everything once it's already down.
                     if( GetKeysym( ev ).sym == SDLK_AC_BACK && ac_back_down_time == 0 ) {

@@ -51,3 +51,13 @@ msgstr "Вокселы"
 
 msgid "Tileset sprites"
 msgstr "Спрайты тайлсета"
+
+msgid "3D wall cutaway"
+msgstr "Срез стен в 3D"
+
+msgid ""
+"If true, walls and trees between the camera and your character are cut down "
+"so they never hide you."
+msgstr ""
+"Если включено, стены и деревья между камерой и персонажем срезаются, чтобы "
+"никогда его не закрывать."

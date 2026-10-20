@@ -1375,6 +1375,8 @@ class voxel_renderer
         const tile_style &terrain_style( const ter_id &t );
         const tile_style &furniture_style( const furn_id &f );
         bool wall_like_at( const tripoint_bub_ms &p );
+        bool cut_here( const tripoint_bub_ms &p ) const;
+        uint8_t orientation_at( const tripoint_bub_ms &p );
         bool fence_like_at( const tripoint_bub_ms &p );
 
         SDL_Window *window = nullptr;
@@ -1405,6 +1407,8 @@ class voxel_renderer
         int vset_generation = -1;
         sprite_atlas atlas;
         bool sprite_style = false;
+        bool cutaway = false;
+        tripoint_bub_ms cut_center;
         GLuint sprite_program = 0;
         GLuint sprite_vbo = 0;
         GLuint quad_vao = 0;
@@ -1863,8 +1867,10 @@ bool voxel_renderer::sprite_terrain( const tripoint_bub_ms &p, const std::string
     }
     const vec3 pos{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) };
     const bool solid = st.kind == vm_kind::wall || st.kind == vm_kind::window || st.kind == vm_kind::door;
+    const bool cut = cut_here( p );
     if( solid && fg ) {
-        const float h = st.kind == vm_kind::wall && st.param == 1 ? level_height * 0.5f : level_height;
+        const float h = ( st.kind == vm_kind::wall && st.param == 1 ) || cut ? level_height * 0.5f :
+                        level_height;
         add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, h );
         vm_key k;
         k.kind = vm_kind::wall;
@@ -1892,6 +1898,9 @@ bool voxel_renderer::sprite_terrain( const tripoint_bub_ms &p, const std::string
     if( fg ) {
         const bool stand = st.overlay || fg->h > 1.01f || st.kind == vm_kind::door_open ||
                            st.kind == vm_kind::stairs_up;
+        if( stand && cut && fg->h > 1.01f ) {
+            return true;
+        }
         if( stand ) {
             add_sprite( sprite_billboard, *fg, pos, 0.0f, voxel_size, light, desat );
         } else {
@@ -2317,10 +2326,7 @@ void voxel_renderer::add_style( const tile_style &st, const tripoint_bub_ms &p, 
     k.variant = st.variants > 1 ? static_cast<uint8_t>( st.variant + h % st.variants ) : st.variant;
     k.param = st.param;
     if( st.oriented ) {
-        const bool ew = wall_like_at( p + tripoint_rel_ms::east ) || wall_like_at( p + tripoint_rel_ms::west );
-        const bool ns = wall_like_at( p + tripoint_rel_ms::north ) ||
-                        wall_like_at( p + tripoint_rel_ms::south );
-        k.param = ( ns && !ew ) ? 1 : 0;
+        k.param = orientation_at( p );
     }
     if( st.fence ) {
         uint8_t mask = 0;
@@ -2343,8 +2349,63 @@ void voxel_renderer::add_style( const tile_style &st, const tripoint_bub_ms &p, 
     if( st.kind == vm_kind::fire ) {
         lift = voxel_size;
     }
+    const voxelset_entry *custom = st.custom;
+    if( !drawing_shadow && cut_here( p ) ) {
+        if( st.kind == vm_kind::wall || st.kind == vm_kind::window || st.kind == vm_kind::door ||
+            st.kind == vm_kind::door_open ) {
+            k.kind = vm_kind::wall;
+            k.param = 1;
+            k.variant = 0;
+            if( st.kind != vm_kind::wall ) {
+                k.material = vm_material::generic;
+                k.color = st.kind == vm_kind::window ? st.color : st.color2;
+            }
+            custom = nullptr;
+        } else if( st.kind == vm_kind::tree || st.kind == vm_kind::pine || st.kind == vm_kind::dead_tree ||
+                   st.kind == vm_kind::young_tree || st.kind == vm_kind::cabinet || st.kind == vm_kind::lamp ||
+                   st.kind == vm_kind::pole || st.kind == vm_kind::hedge ) {
+            k.kind = vm_kind::stump;
+            k.color = st.color2;
+            k.variant = 0;
+            k.param = 0;
+            custom = nullptr;
+        }
+    }
     add_at( lists, k, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) },
-            lift, yaw, light, desat, 1.0f, { 255, 255, 255 }, st.custom, h );
+            lift, yaw, light, desat, 1.0f, { 255, 255, 255 }, custom, h );
+}
+
+bool voxel_renderer::cut_here( const tripoint_bub_ms &p ) const
+{
+    if( !cutaway || p.z() != cut_center.z() ) {
+        return false;
+    }
+    const float dx = static_cast<float>( p.x() - cut_center.x() );
+    const float dz = static_cast<float>( p.y() - cut_center.y() );
+    const float cx = std::sin( cam.yaw );
+    const float cz = std::cos( cam.yaw );
+    const float along = dx * cx + dz * cz;
+    const float lateral = std::fabs( dx * cz - dz * cx );
+    const float reach = 3.0f + 9.0f * std::cos( cam.pitch );
+    return along > 0.3f && along < reach && lateral < 1.6f + along * 0.45f;
+}
+
+uint8_t voxel_renderer::orientation_at( const tripoint_bub_ms &p )
+{
+    const bool n = wall_like_at( p + tripoint_rel_ms::north );
+    const bool s = wall_like_at( p + tripoint_rel_ms::south );
+    const bool e = wall_like_at( p + tripoint_rel_ms::east );
+    const bool w = wall_like_at( p + tripoint_rel_ms::west );
+    if( e && w ) {
+        return 0;
+    }
+    if( n && s ) {
+        return 1;
+    }
+    if( ( n || s ) && !( e || w ) ) {
+        return 1;
+    }
+    return 0;
 }
 
 float light_value( float ambient, lit_level ll )
@@ -2364,6 +2425,8 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     avatar &you = get_avatar();
     const visibility_variables &cache = here.get_visibility_variables_cache();
     sync_voxelset();
+    cutaway = get_option<bool>( "VOXEL_CUTAWAY" );
+    cut_center = get_avatar().pos_bub( get_map() );
     sprite_style = get_option<std::string>( "VOXEL_STYLE" ) == "sprites";
     if( sprite_style ) {
         const std::string tileset = get_option<std::string>( "TILES" );
@@ -3111,6 +3174,47 @@ void orbit( float dx, float dy )
     cam.pitch = std::clamp( cam.pitch + dy * 0.006f, 0.35f, 1.5f );
 }
 
+void rotate_step( int steps )
+{
+    const float quarter = pi / 4.0f;
+    cam.yaw = std::round( cam.yaw / quarter ) * quarter + steps * quarter;
+}
+
+void tilt_step( int steps )
+{
+    cam.pitch = std::clamp( cam.pitch + steps * 0.15f, 0.35f, 1.5f );
+}
+
+void reset_camera()
+{
+    cam.yaw = 0.0f;
+    cam.pitch = 0.95f;
+}
+
+std::optional<point> project( const tripoint_bub_ms &p, float lift )
+{
+    if( !cam.valid ) {
+        return std::nullopt;
+    }
+    const std::array<float, 4> v = { p.x() + 0.5f, p.z() * level_height + lift, p.y() + 0.5f, 1.0f };
+    std::array<float, 4> c = { 0.0f, 0.0f, 0.0f, 0.0f };
+    for( int row = 0; row < 4; ++row ) {
+        for( int k = 0; k < 4; ++k ) {
+            c[row] += cam.view_proj.m[k * 4 + row] * v[k];
+        }
+    }
+    if( c[3] <= 0.0f ) {
+        return std::nullopt;
+    }
+    const float nx = c[0] / c[3];
+    const float ny = c[1] / c[3];
+    if( nx < -1.0f || nx > 1.0f || ny < -1.0f || ny > 1.0f ) {
+        return std::nullopt;
+    }
+    return point( static_cast<int>( ( nx * 0.5f + 0.5f ) * cam.width ),
+                  static_cast<int>( ( 0.5f - ny * 0.5f ) * cam.height ) );
+}
+
 std::optional<tripoint_bub_ms> pick( const point &pixel, const point &size )
 {
     if( !cam.valid || size.x <= 0 || size.y <= 0 ) {
@@ -3136,14 +3240,32 @@ std::optional<tripoint_bub_ms> pick( const point &pixel, const point &size )
     const vec3 b = unproject( nx, ny, 1.0f );
     const vec3 dir = b - a;
     const float plane = cam.center_z * level_height + voxel_size;
-    if( std::fabs( dir.y ) < 1e-6f ) {
+    if( dir.y > -1e-6f ) {
         return std::nullopt;
     }
-    const float t = ( plane - a.y ) / dir.y;
-    if( t < 0.0f ) {
+    const float t_floor = ( plane - a.y ) / dir.y;
+    const float t_top = std::max( 0.0f, ( plane + level_height - a.y ) / dir.y );
+    if( t_floor < 0.0f ) {
         return std::nullopt;
     }
-    const vec3 hit = a + dir * t;
+    map &here = get_map();
+    constexpr int samples = 160;
+    for( int i = 0; i <= samples; ++i ) {
+        const float t = t_top + ( t_floor - t_top ) * static_cast<float>( i ) / samples;
+        const vec3 pt = a + dir * t;
+        const tripoint_bub_ms tp( static_cast<int>( std::floor( pt.x ) ), static_cast<int>( std::floor(
+                                      pt.z ) ), cam.center_z );
+        if( !here.inbounds( tp ) ) {
+            continue;
+        }
+        const ter_t &ter = here.ter( tp ).obj();
+        const bool tall = ter.has_flag( ter_furn_flag::TFLAG_WALL ) ||
+                          ter.has_flag( ter_furn_flag::TFLAG_DOOR ) || ter.has_flag( ter_furn_flag::TFLAG_WINDOW );
+        if( tall && pt.y <= plane + level_height ) {
+            return tp;
+        }
+    }
+    const vec3 hit = a + dir * t_floor;
     return tripoint_bub_ms( static_cast<int>( std::floor( hit.x ) ), static_cast<int>( std::floor(
                                 hit.z ) ), cam.center_z );
 }
@@ -3191,6 +3313,23 @@ bool render( const tripoint_bub_ms &, int, int, std::vector<uint8_t> & )
 
 void orbit( float, float )
 {
+}
+
+void rotate_step( int )
+{
+}
+
+void tilt_step( int )
+{
+}
+
+void reset_camera()
+{
+}
+
+std::optional<point> project( const tripoint_bub_ms &, float )
+{
+    return std::nullopt;
 }
 
 std::optional<tripoint_bub_ms> pick( const point &, const point & )

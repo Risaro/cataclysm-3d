@@ -6100,3 +6100,12 @@ void cata_tiles::export_voxel_overlays( voxel_view::overlays &out ) const
         out.highlights = highlights;
     }
 }
+
+std::optional<point_bub_ms> cata_tiles::screen_to_tile_pos( const point &screen ) const
+{
+    if( is_isometric() || tile_width <= 0 || tile_height <= 0 ) {
+        return std::nullopt;
+    }
+    return point_bub_ms( divide_round_down( screen.x - op.x, tile_width ) + o.x,
+                         divide_round_down( screen.y - op.y, tile_height ) + o.y );
+}
