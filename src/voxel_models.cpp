@@ -1412,6 +1412,34 @@ uint64_t vm_key::pack() const
            ( quant( color ) << 17 ) | ( quant( color2 ) << 2 );
 }
 
+const char *vm_kind_name( vm_kind kind )
+{
+    static const std::array<const char *, vm_kind_count> names = { {
+            "floor", "wall", "window", "door", "door_open", "tree", "pine", "dead_tree", "young_tree",
+            "shrub", "flower", "tall_grass", "water", "stairs_down", "stairs_up", "hole", "fence", "rubble",
+            "boulder", "bed", "table", "chair", "sofa", "counter", "cabinet", "toilet", "sink", "bathtub",
+            "stove", "screen", "crate", "barrel", "dumpster", "sign", "lamp", "furniture", "humanoid",
+            "zombie", "quadruped", "bird", "bug", "robot", "blob", "fish", "plant_creature", "item_pile",
+            "veh_frame", "veh_wheel", "veh_body", "veh_window", "veh_seat", "veh_part", "fire", "splat",
+            "cloud", "cursor", "machine", "pole", "stack", "mound", "mat", "panel", "pillar", "stump",
+            "ramp", "grave", "anvil", "hedge", "trap", "vehicle", "item_gun", "item_blade", "item_tool",
+            "item_clothing", "item_food", "item_bottle", "item_book", "item_ammo", "item_corpse", "held",
+            "rain", "snow", "bolt", "marker"
+        }
+    };
+    return names[static_cast<int>( kind )];
+}
+
+const char *vm_material_name( vm_material material )
+{
+    static const std::array<const char *, vm_material_count> names = { {
+            "generic", "grass", "dirt", "sand", "pavement", "sidewalk", "concrete", "wood", "tile",
+            "carpet", "rock", "metal", "brick", "glass", "snow", "log"
+        }
+    };
+    return names[static_cast<int>( material )];
+}
+
 bool vm_is_emissive( vm_kind kind )
 {
     return kind == vm_kind::fire || kind == vm_kind::cursor || kind == vm_kind::rain ||

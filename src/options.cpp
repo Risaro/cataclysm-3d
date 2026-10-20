@@ -36,6 +36,7 @@
 #include "string_input_popup.h"
 #include "system_locale.h"
 #include "translations.h"
+#include "voxel_tileset.h"
 #include "try_parse_integer.h"
 #include "ui_manager.h"
 #include "worldfactory.h"
@@ -2567,6 +2568,28 @@ void options_manager::add_options_graphics()
            );
 
         get_option( "VOXEL_SHADOWS" ).setPrerequisite( "VOXEL_VIEW" );
+
+        std::vector<id_and_option> voxelsets = { { "builtin", to_translation( "Built-in procedural models" ) } };
+        for( const std::pair<std::string, std::string> &vs : list_voxelsets() ) {
+            voxelsets.emplace_back( vs.first, no_translation( vs.second ) );
+        }
+        add( "VOXEL_TILESET", page_id, to_translation( "3D voxel tileset" ),
+             to_translation( "Choose the voxel tileset used by the 3D view.  Voxel tilesets live in gfx/voxel and replace the built-in models with MagicaVoxel files." ),
+             voxelsets, "builtin", COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_TILESET" ).setPrerequisite( "VOXEL_VIEW" );
+
+        add( "VOXEL_STYLE", page_id, to_translation( "3D view style" ),
+             to_translation( "Voxels draws everything as voxel models.  Tileset sprites textures the ground with the current 2D tileset and shows creatures, items, furniture and vehicles as sprites standing in the 3D world." ),
+        {
+            { "voxels", to_translation( "Voxels" ) },
+            { "sprites", to_translation( "Tileset sprites" ) }
+        },
+        "voxels", COPT_CURSES_HIDE
+           );
+
+        get_option( "VOXEL_STYLE" ).setPrerequisite( "VOXEL_VIEW" );
 
         add( "TILES", page_id, to_translation( "Choose tileset" ),
              to_translation( "Choose the tileset you want to use." ),

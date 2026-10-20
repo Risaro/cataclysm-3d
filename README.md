@@ -1,3 +1,32 @@
+# Cataclysm 3D
+
+A fork of Cataclysm: Dark Days Ahead that renders the game map as a real 3D scene. The game logic,
+saves and mods are untouched: the reality bubble is turned into a voxel world with an orbit camera,
+sun shadows, the game's own light map, smooth movement and 3D effects.
+
+* **Voxel style** - terrain, furniture, vehicles, items, creatures, fields and weather are built from
+  procedurally generated voxel models.
+* **Tileset sprites style** - the ground is textured with your 2D tileset (UltimateCataclysm and
+  others) and creatures, items and furniture stand in the world as sprites.
+* **Voxel tilesets** - artists can replace any model with MagicaVoxel `.vox` files. See
+  [doc/VOXEL_TILESETS.md](doc/VOXEL_TILESETS.md).
+
+Controls: hold the middle mouse button and drag to rotate the camera, use the zoom keys to move
+closer. Movement keys follow the camera. Options live in Settings, Graphics, Tileset options.
+
+## Building
+
+```sh
+make -j$(nproc) TILES=1 SOUND=1 RELEASE=1 LOCALIZE=1 TESTS=0
+tools/fetch_assets.sh
+./cataclysm-tiles
+```
+
+`tools/fetch_assets.sh` downloads the tilesets, sound packs and translations from the matching
+upstream release (it needs the GitHub CLI) and merges the extra translations from `lang/voxel`.
+
+---
+
 # Cataclysm: Dark Days Ahead
 
 Cataclysm: Dark Days Ahead is a turn-based survival game set in a post-apocalyptic world. While some have described it as a "zombie game", there is far more to Cataclysm than that. Struggle to survive in a harsh, persistent, procedurally generated world. Scavenge the remnants of a dead civilization for food, equipment, or, if you are lucky, a vehicle with a full tank of gas to get you the hell out of Dodge. Fight to defeat or escape from a wide variety of powerful monstrosities, from zombies to giant insects to killer robots and things far stranger and deadlier, and against the others like yourself, who want what you have...

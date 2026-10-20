@@ -1,0 +1,53 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: ru\n"
+"Plural-Forms: nplurals=4; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<12 || n%100>14) ? 1 : n%10==0 || (n%10>=5 && n%10<=9) || (n%100>=11 && n%100<=14)? 2 : 3);\n"
+
+msgid "3D voxel view"
+msgstr "3D-вид (вокселы)"
+
+msgid ""
+"If true, the map is drawn as a 3D voxel scene.  Hold the middle mouse button "
+"and drag to rotate the camera, use the zoom keys to move it closer or farther."
+msgstr ""
+"Если включено, карта отображается как трёхмерная воксельная сцена.  Зажмите "
+"среднюю кнопку мыши и тяните, чтобы вращать камеру; клавиши масштаба "
+"приближают и отдаляют её."
+
+msgid "3D voxel shadows"
+msgstr "Тени в 3D"
+
+msgid "If true, the sun casts shadows in the 3D voxel view."
+msgstr "Если включено, солнце отбрасывает тени в 3D-виде."
+
+msgid "3D voxel tileset"
+msgstr "Воксельный тайлсет для 3D"
+
+msgid ""
+"Choose the voxel tileset used by the 3D view.  Voxel tilesets live in gfx/"
+"voxel and replace the built-in models with MagicaVoxel files."
+msgstr ""
+"Выберите воксельный тайлсет для 3D-вида.  Воксельные тайлсеты лежат в gfx/"
+"voxel и заменяют встроенные модели файлами MagicaVoxel."
+
+msgid "Built-in procedural models"
+msgstr "Встроенные процедурные модели"
+
+msgid "3D view style"
+msgstr "Стиль 3D-вида"
+
+msgid ""
+"Voxels draws everything as voxel models.  Tileset sprites textures the ground "
+"with the current 2D tileset and shows creatures, items, furniture and "
+"vehicles as sprites standing in the 3D world."
+msgstr ""
+"«Вокселы» рисуют всё воксельными моделями.  «Спрайты тайлсета» покрывают "
+"землю текстурами текущего 2D-тайлсета, а существа, предметы, мебель и "
+"транспорт показываются спрайтами, стоящими в 3D-мире."
+
+msgid "Voxels"
+msgstr "Вокселы"
+
+msgid "Tileset sprites"
+msgstr "Спрайты тайлсета"

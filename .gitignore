@@ -54,6 +54,7 @@
 !/gfx/loading_screens
 !/gfx/Larwick_Overmap
 !/gfx/tile_config_template.json
+!/gfx/voxel
 /graveyard/
 /memorial/
 /mods/
@@ -255,3 +256,5 @@ Gemfile.lock
 VERSION.txt
 tests/objwin/tiles/pch/tests-pch.hpp.gch
 /userdir/
+/data/sound/CC-Sounds/
+/voxel-export

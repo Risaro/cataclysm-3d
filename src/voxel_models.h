@@ -144,6 +144,10 @@ struct vm_key {
 };
 
 bool vm_is_emissive( vm_kind kind );
+const char *vm_kind_name( vm_kind kind );
+const char *vm_material_name( vm_material material );
+constexpr int vm_kind_count = static_cast<int>( vm_kind::marker ) + 1;
+constexpr int vm_material_count = static_cast<int>( vm_material::log ) + 1;
 voxel_grid make_voxel_model( const vm_key &key );
 
 #endif // CATA_SRC_VOXEL_MODELS_H

@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <string>
+#include <map>
 #include <unordered_map>
 #include <utility>
 
@@ -24,6 +25,7 @@
 #include "game.h"
 #include "item.h"
 #include "item_location.h"
+#include "itype.h"
 #include "map.h"
 #include "map_memory.h"
 #include "mapdata.h"
@@ -41,6 +43,9 @@
 #include "voxel_gl.h"
 #include "voxel_model.h"
 #include "voxel_models.h"
+#include "voxel_sprites.h"
+#include "voxel_tileset.h"
+#include "voxel_vox.h"
 #include "vpart_position.h"
 #include "weather.h"
 #include "weather_type.h"
@@ -273,6 +278,7 @@ struct tile_style {
     bool stripes = false;
     bool spin = false;
     bool no_floor = false;
+    const voxelset_entry *custom = nullptr;
 };
 
 struct camera_state {
@@ -1244,6 +1250,85 @@ std::optional<vm_key> held_key( const Character &ch )
     return k;
 }
 
+struct sprite_instance {
+    float x;
+    float y;
+    float z;
+    float yaw;
+    float w;
+    float h;
+    float layer;
+    float light;
+    float u0;
+    float v0;
+    float u1;
+    float v1;
+    float shift_x;
+    float shift_y;
+    float desat;
+    float height;
+};
+
+enum sprite_mode : int {
+    sprite_billboard = 0,
+    sprite_flat = 1,
+    sprite_cube = 2
+};
+
+template<typename Next>
+const voxelset_entry *find_chain( const voxelset *vs, std::string id, Next next )
+{
+    if( vs == nullptr ) {
+        return nullptr;
+    }
+    for( int i = 0; i < 8 && !id.empty(); ++i ) {
+        if( const voxelset_entry *e = vs->find_id( id ) ) {
+            return e;
+        }
+        id = next( id );
+    }
+    return nullptr;
+}
+
+std::string map_looks_like( const std::string &id )
+{
+    const ter_str_id t( id );
+    if( t.is_valid() ) {
+        return t->looks_like;
+    }
+    const furn_str_id f( id );
+    if( f.is_valid() ) {
+        return f->looks_like;
+    }
+    return std::string();
+}
+
+std::string monster_looks_like( const std::string &id )
+{
+    const mtype_id m( id );
+    return m.is_valid() ? m->looks_like : std::string();
+}
+
+std::string item_looks_like( const std::string &id )
+{
+    const itype_id i( id );
+    return i.is_valid() ? i->looks_like.str() : std::string();
+}
+
+std::string vpart_looks_like( const std::string &id )
+{
+    if( id.compare( 0, 3, "vp_" ) != 0 ) {
+        return std::string();
+    }
+    const vpart_id v( id.substr( 3 ) );
+    return v.is_valid() && !v->looks_like.empty() ? "vp_" + v->looks_like : std::string();
+}
+
+std::string no_looks_like( const std::string & )
+{
+    return std::string();
+}
+
 class voxel_renderer
 {
     public:
@@ -1255,6 +1340,7 @@ class voxel_renderer
         bool init();
         bool ensure_targets( int w, int h );
         int model_for( const vm_key &key );
+        int upload_model( const voxel_mesh &mesh, bool emissive );
         GLuint compile( const char *vs, const char *fs );
         void collect( const tripoint_bub_ms &center, int radius, float daylight );
         void draw_pass( instance_lists &lists, bool glass, GLuint program );
@@ -1263,7 +1349,24 @@ class voxel_renderer
         void add( instance_lists &lists, const vm_key &key, const tripoint_bub_ms &p, float lift, float yaw,
                   float light, float desat, float scale = 1.0f, const voxel_rgb &tint = { 255, 255, 255 } );
         void add_at( instance_lists &lists, const vm_key &key, const vec3 &pos, float lift, float yaw,
-                     float light, float desat, float scale = 1.0f, const voxel_rgb &tint = { 255, 255, 255 } );
+                     float light, float desat, float scale = 1.0f, const voxel_rgb &tint = { 255, 255, 255 },
+                     const voxelset_entry *custom = nullptr, uint32_t pick = 0 );
+        int custom_model( const voxelset_entry &entry, uint32_t pick );
+        void add_sprite( sprite_mode mode, const sprite_ref &spr, const vec3 &pos, float yaw, float lift,
+                         float light, float desat, bool flip = false, float height = 1.0f, float layer = 0.0f );
+        template<typename Next>
+        const sprite_ref *find_sprite( const std::string &id, Next next, bool background = false ) const;
+        bool sprite_terrain( const tripoint_bub_ms &p, const std::string &id, const tile_style &st,
+                             float light, float desat );
+        bool sprite_furniture( const tripoint_bub_ms &p, const std::string &id, const tile_style &st,
+                               float light, float desat );
+        bool sprite_character( const Character &ch, const vec3 &pos, float light );
+        void draw_sprites( const mat4 &view, const mat4 &view_proj, const mat4 &light_vp,
+                           const vec3 &sun_dir, float daylight, bool use_shadow, const vec3 &focus, float fog_far,
+                           const vec3 &fog );
+        bool init_sprites();
+        void reset_models();
+        void sync_voxelset();
         vec3 animated( const void *id, const tripoint_bub_ms &p );
         void add_style( const tile_style &st, const tripoint_bub_ms &p, float light, float desat,
                         bool furniture );
@@ -1295,6 +1398,18 @@ class voxel_renderer
         std::unordered_map<uint64_t, int> model_lookup;
         std::unordered_map<int, tile_style> ter_styles;
         std::unordered_map<int, tile_style> furn_styles;
+        std::unordered_map<std::string, int> custom_lookup;
+        const voxelset *vset = nullptr;
+        int vset_generation = -1;
+        sprite_atlas atlas;
+        bool sprite_style = false;
+        GLuint sprite_program = 0;
+        GLuint sprite_vbo = 0;
+        GLuint quad_vao = 0;
+        GLuint quad_vbo = 0;
+        GLuint cube_vao = 0;
+        GLuint cube_vbo = 0;
+        std::map<std::pair<int, int>, std::vector<sprite_instance>> sprite_batches;
 
         instance_lists main_lists;
         instance_lists shadow_lists;
@@ -1426,6 +1541,109 @@ void main()
 }
 )";
 
+const char *sprite_vs = R"(#version 330 core
+layout( location = 0 ) in vec3 a_corner;
+layout( location = 1 ) in vec3 a_normal;
+layout( location = 2 ) in vec2 a_uv;
+layout( location = 3 ) in vec4 i_pos;
+layout( location = 4 ) in vec4 i_size;
+layout( location = 5 ) in vec4 i_uv;
+layout( location = 6 ) in vec4 i_extra;
+uniform mat4 u_vp;
+uniform mat4 u_light_vp;
+uniform int u_mode;
+uniform vec3 u_right;
+uniform vec3 u_up;
+uniform vec3 u_toward;
+out vec2 v_uv;
+out vec3 v_world;
+out vec3 v_normal;
+out vec4 v_shadow;
+out float v_light;
+out float v_desat;
+void main()
+{
+    vec3 world;
+    vec3 n;
+    float c = cos( i_pos.w );
+    float s = sin( i_pos.w );
+    if( u_mode == 0 ) {
+        vec3 base = i_pos.xyz + vec3( 0.5, 0.0, 0.5 );
+        world = base + u_right * ( ( a_corner.x - 0.5 ) * i_size.x + i_extra.x ) +
+                u_up * ( a_corner.y * i_size.y + i_extra.y ) + u_toward * i_size.z;
+        n = u_toward;
+    } else if( u_mode == 1 ) {
+        vec2 p = vec2( ( a_corner.x - 0.5 ) * i_size.x + i_extra.x, ( 0.5 - a_corner.y ) * i_size.y );
+        p = vec2( c * p.x - s * p.y, s * p.x + c * p.y );
+        world = i_pos.xyz + vec3( 0.5 + p.x, i_size.z, 0.5 + p.y );
+        n = vec3( 0.0, 1.0, 0.0 );
+    } else {
+        world = i_pos.xyz + a_corner * vec3( 1.0, i_extra.w, 1.0 );
+        n = a_normal;
+    }
+    v_uv = mix( i_uv.xy, i_uv.zw, vec2( a_uv.x, 1.0 - a_uv.y ) );
+    v_world = world;
+    v_normal = n;
+    v_light = i_size.w;
+    v_desat = i_extra.z;
+    v_shadow = u_light_vp * vec4( world, 1.0 );
+    gl_Position = u_vp * vec4( world, 1.0 );
+}
+)";
+
+const char *sprite_fs = R"(#version 330 core
+in vec2 v_uv;
+in vec3 v_world;
+in vec3 v_normal;
+in vec4 v_shadow;
+in float v_light;
+in float v_desat;
+uniform sampler2D u_tex;
+uniform sampler2DShadow u_shadow;
+uniform int u_mode;
+uniform vec3 u_sun;
+uniform float u_daylight;
+uniform float u_use_shadow;
+uniform vec3 u_focus;
+uniform float u_fog_far;
+uniform vec3 u_fog_color;
+out vec4 frag;
+float shadow_at()
+{
+    vec3 p = v_shadow.xyz / v_shadow.w * 0.5 + 0.5;
+    if( p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z > 1.0 ) {
+        return 1.0;
+    }
+    float sum = 0.0;
+    vec2 texel = vec2( 1.0 / 2048.0 );
+    for( int x = -1; x <= 1; ++x ) {
+        for( int y = -1; y <= 1; ++y ) {
+            sum += texture( u_shadow, vec3( p.xy + vec2( x, y ) * texel, p.z - 0.0015 ) );
+        }
+    }
+    return sum / 9.0;
+}
+void main()
+{
+    vec4 t = texture( u_tex, v_uv );
+    if( t.a < 0.5 ) {
+        discard;
+    }
+    vec3 n = normalize( v_normal );
+    float shape = u_mode == 0 ? 0.82 : 0.62 + 0.3 * n.y + 0.06 * n.x - 0.04 * n.z;
+    float sun = u_mode == 0 ? 0.55 : max( dot( n, u_sun ), 0.0 );
+    float sh = u_use_shadow > 0.5 ? shadow_at() : 1.0;
+    vec3 col = t.rgb * ( v_light * shape + u_daylight * sun * sh * 0.45 * min( v_light, 1.0 ) );
+    col = vec3( 1.0 ) - exp( -col * 2.1 );
+    float g = dot( col, vec3( 0.299, 0.587, 0.114 ) );
+    col = mix( col, vec3( g ) * vec3( 0.78, 0.86, 1.05 ), v_desat );
+    float d = length( v_world.xz - u_focus.xz );
+    float fog = smoothstep( u_fog_far * 0.72, u_fog_far, d );
+    frag = vec4( mix( col, u_fog_color, fog ), 1.0 );
+}
+)";
+
+
 GLuint voxel_renderer::compile( const char *vs, const char *fs )
 {
     voxel_gl_api &gl = voxel_gl();
@@ -1498,6 +1716,9 @@ bool voxel_renderer::init()
         return false;
     }
     gl.glGenBuffers( 1, &instance_vbo );
+    if( !init_sprites() ) {
+        return false;
+    }
 
     GLint max_samples = 0;
     gl.glGetIntegerv( GL_MAX_SAMPLES, &max_samples );
@@ -1523,6 +1744,255 @@ bool voxel_renderer::init()
         return false;
     }
     return true;
+}
+
+bool voxel_renderer::init_sprites()
+{
+    voxel_gl_api &gl = voxel_gl();
+    sprite_program = compile( sprite_vs, sprite_fs );
+    if( !sprite_program ) {
+        return false;
+    }
+    gl.glGenBuffers( 1, &sprite_vbo );
+    const std::array<float, 48> quad = { {
+            0, 0, 0, 0, 0, 1, 0, 0,
+            1, 0, 0, 0, 0, 1, 1, 0,
+            1, 1, 0, 0, 0, 1, 1, 1,
+            0, 0, 0, 0, 0, 1, 0, 0,
+            1, 1, 0, 0, 0, 1, 1, 1,
+            0, 1, 0, 0, 0, 1, 0, 1
+        }
+    };
+    std::vector<float> cube;
+    const auto face = [&cube]( const std::array<std::array<float, 3>, 4> &c, const std::array<float, 3> &n,
+    const std::array<std::array<float, 2>, 4> &uv ) {
+        for( const int i : { 0, 1, 2, 0, 2, 3 } ) {
+            cube.insert( cube.end(), { c[i][0], c[i][1], c[i][2], n[0], n[1], n[2], uv[i][0], uv[i][1] } );
+        }
+    };
+    const std::array<std::array<float, 2>, 4> side_uv = { { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } } };
+    face( { { { 0, 0, 1 }, { 1, 0, 1 }, { 1, 1, 1 }, { 0, 1, 1 } } }, { 0, 0, 1 }, side_uv );
+    face( { { { 1, 0, 0 }, { 0, 0, 0 }, { 0, 1, 0 }, { 1, 1, 0 } } }, { 0, 0, -1 }, side_uv );
+    face( { { { 1, 0, 1 }, { 1, 0, 0 }, { 1, 1, 0 }, { 1, 1, 1 } } }, { 1, 0, 0 }, side_uv );
+    face( { { { 0, 0, 0 }, { 0, 0, 1 }, { 0, 1, 1 }, { 0, 1, 0 } } }, { -1, 0, 0 }, side_uv );
+    face( { { { 0, 1, 1 }, { 1, 1, 1 }, { 1, 1, 0 }, { 0, 1, 0 } } }, { 0, 1, 0 }, { { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } } } );
+    const auto make_vao = [&gl, this]( const float * data, size_t floats, GLuint & vao, GLuint & vbo ) {
+        gl.glGenVertexArrays( 1, &vao );
+        gl.glGenBuffers( 1, &vbo );
+        gl.glBindVertexArray( vao );
+        gl.glBindBuffer( GL_ARRAY_BUFFER, vbo );
+        gl.glBufferData( GL_ARRAY_BUFFER, static_cast<GLsizeiptr>( floats * sizeof( float ) ), data,
+                         GL_STATIC_DRAW );
+        const GLsizei stride = 8 * sizeof( float );
+        gl.glEnableVertexAttribArray( 0 );
+        gl.glVertexAttribPointer( 0, 3, GL_FLOAT, GL_FALSE, stride, nullptr );
+        gl.glEnableVertexAttribArray( 1 );
+        gl.glVertexAttribPointer( 1, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>( 3 * sizeof( float ) ) );
+        gl.glEnableVertexAttribArray( 2 );
+        gl.glVertexAttribPointer( 2, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>( 6 * sizeof( float ) ) );
+        for( GLuint loc = 3; loc <= 6; ++loc ) {
+            gl.glEnableVertexAttribArray( loc );
+            gl.glVertexAttribDivisor( loc, 1 );
+        }
+        gl.glBindBuffer( GL_ARRAY_BUFFER, sprite_vbo );
+        gl.glBindVertexArray( 0 );
+    };
+    make_vao( quad.data(), quad.size(), quad_vao, quad_vbo );
+    make_vao( cube.data(), cube.size(), cube_vao, cube_vbo );
+    return true;
+}
+
+template<typename Next>
+const sprite_ref *voxel_renderer::find_sprite( const std::string &id, Next next, bool background ) const
+{
+    std::string cur = id;
+    for( int i = 0; i < 8 && !cur.empty(); ++i ) {
+        if( const sprite_ref *s = background ? atlas.bg( cur ) : atlas.fg( cur ) ) {
+            return s;
+        }
+        cur = next( cur );
+    }
+    return nullptr;
+}
+
+void voxel_renderer::add_sprite( sprite_mode mode, const sprite_ref &spr, const vec3 &pos, float yaw,
+                                 float lift, float light, float desat, bool flip, float height, float layer )
+{
+    sprite_instance si{};
+    si.x = pos.x;
+    si.y = pos.y * level_height + ( mode == sprite_flat ? 0.0f : lift );
+    si.z = pos.z;
+    si.yaw = yaw;
+    si.w = spr.w;
+    si.h = spr.h;
+    si.layer = mode == sprite_flat ? lift : layer;
+    si.light = light;
+    si.u0 = flip ? spr.u1 : spr.u0;
+    si.u1 = flip ? spr.u0 : spr.u1;
+    si.v0 = spr.v0;
+    si.v1 = spr.v1;
+    si.shift_x = flip ? -spr.shift_x : spr.shift_x;
+    si.shift_y = spr.shift_y;
+    si.desat = desat;
+    si.height = height;
+    sprite_batches[ { static_cast<int>( mode ), spr.sheet }].push_back( si );
+}
+
+bool voxel_renderer::sprite_terrain( const tripoint_bub_ms &p, const std::string &id,
+                                     const tile_style &st, float light, float desat )
+{
+    if( !st.draw && st.no_floor ) {
+        return true;
+    }
+    const sprite_ref *fg = find_sprite( id, map_looks_like );
+    const sprite_ref *bg = find_sprite( id, map_looks_like, true );
+    if( fg == nullptr && bg == nullptr ) {
+        return false;
+    }
+    const vec3 pos{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) };
+    const bool solid = st.kind == vm_kind::wall || st.kind == vm_kind::window || st.kind == vm_kind::door;
+    if( solid && fg ) {
+        const float h = st.kind == vm_kind::wall && st.param == 1 ? level_height * 0.5f : level_height;
+        add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, h );
+        vm_key k;
+        k.kind = vm_kind::wall;
+        add( shadow_lists, k, p, 0.0f, 0.0f, 1.0f, 0.0f );
+        return true;
+    }
+    if( bg ) {
+        add_sprite( sprite_flat, *bg, pos, 0.0f, 0.004f, light, desat );
+    } else if( st.overlay || st.kind == vm_kind::door_open ) {
+        vm_key fk;
+        fk.kind = vm_kind::floor;
+        fk.material = st.overlay ? st.floor_material : vm_material::concrete;
+        fk.color = st.overlay ? st.floor_color : rgb( 150, 148, 142 );
+        add( main_lists, fk, p, 0.0f, 0.0f, light, desat );
+    }
+    if( fg ) {
+        const bool stand = st.overlay || fg->h > 1.01f || st.kind == vm_kind::door_open ||
+                           st.kind == vm_kind::stairs_up;
+        if( stand ) {
+            add_sprite( sprite_billboard, *fg, pos, 0.0f, voxel_size, light, desat );
+        } else {
+            add_sprite( sprite_flat, *fg, pos, 0.0f, bg ? 0.008f : 0.004f, light, desat );
+        }
+    }
+    return true;
+}
+
+bool voxel_renderer::sprite_furniture( const tripoint_bub_ms &p, const std::string &id,
+                                       const tile_style &st, float light, float desat )
+{
+    const sprite_ref *fg = find_sprite( id, map_looks_like );
+    if( fg == nullptr ) {
+        return false;
+    }
+    const vec3 pos{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) };
+    if( st.kind == vm_kind::mat || st.kind == vm_kind::splat ) {
+        add_sprite( sprite_flat, *fg, pos, 0.0f, 0.012f, light, desat );
+    } else {
+        add_sprite( sprite_billboard, *fg, pos, 0.0f, voxel_size, light, desat );
+    }
+    return true;
+}
+
+bool voxel_renderer::sprite_character( const Character &ch, const vec3 &pos, float light )
+{
+    const std::string base = std::string( ch.is_npc() ? "npc_" : "player_" ) + ( ch.male ? "male" :
+                             "female" );
+    const sprite_ref *body = atlas.fg( base );
+    if( body == nullptr ) {
+        return false;
+    }
+    const bool flip = ch.facing == FacingDirection::LEFT;
+    add_sprite( sprite_billboard, *body, pos, 0.0f, voxel_size, light, 0.0f, flip );
+    float layer = 0.0f;
+    for( const std::pair<std::string, std::string> &overlay : ch.get_overlay_ids() ) {
+        std::string over_type;
+        std::string looks = overlay.first;
+        if( looks.compare( 0, 5, "worn_" ) == 0 ) {
+            over_type = "worn_";
+            looks = looks.substr( 5 );
+        } else if( looks.compare( 0, 8, "wielded_" ) == 0 ) {
+            over_type = "wielded_";
+            looks = looks.substr( 8 );
+        }
+        const sprite_ref *spr = nullptr;
+        for( int i = 0; i < 8 && !looks.empty() && spr == nullptr; ++i ) {
+            spr = atlas.fg( std::string( ch.male ? "overlay_male_" : "overlay_female_" ) + over_type + looks );
+            if( spr == nullptr ) {
+                spr = atlas.fg( "overlay_" + over_type + looks );
+            }
+            if( spr == nullptr ) {
+                looks = over_type.empty() ? std::string() : item_looks_like( looks );
+            }
+        }
+        if( spr ) {
+            layer += 0.004f;
+            add_sprite( sprite_billboard, *spr, pos, 0.0f, voxel_size, light, 0.0f, flip, 1.0f, layer );
+        }
+    }
+    return true;
+}
+
+void voxel_renderer::draw_sprites( const mat4 &view, const mat4 &view_proj, const mat4 &light_vp,
+                                   const vec3 &sun_dir, float daylight, bool use_shadow, const vec3 &focus, float fog_far,
+                                   const vec3 &fog )
+{
+    if( sprite_batches.empty() ) {
+        return;
+    }
+    voxel_gl_api &gl = voxel_gl();
+    std::vector<sprite_instance> all;
+    std::vector<std::pair<std::pair<int, int>, std::pair<size_t, size_t>>> ranges;
+    for( const auto &b : sprite_batches ) {
+        if( b.second.empty() ) {
+            continue;
+        }
+        ranges.push_back( { b.first, { all.size(), b.second.size() } } );
+        all.insert( all.end(), b.second.begin(), b.second.end() );
+    }
+    gl.glBindBuffer( GL_ARRAY_BUFFER, sprite_vbo );
+    gl.glBufferData( GL_ARRAY_BUFFER, static_cast<GLsizeiptr>( all.size() * sizeof( sprite_instance ) ),
+                     all.data(), GL_STREAM_DRAW );
+    gl.glUseProgram( sprite_program );
+    const auto loc = [&gl, this]( const char *name ) {
+        return gl.glGetUniformLocation( sprite_program, name );
+    };
+    gl.glUniformMatrix4fv( loc( "u_vp" ), 1, GL_FALSE, view_proj.m.data() );
+    gl.glUniformMatrix4fv( loc( "u_light_vp" ), 1, GL_FALSE, light_vp.m.data() );
+    gl.glUniform3f( loc( "u_right" ), view.m[0], view.m[4], view.m[8] );
+    gl.glUniform3f( loc( "u_up" ), view.m[1], view.m[5], view.m[9] );
+    gl.glUniform3f( loc( "u_toward" ), view.m[2], view.m[6], view.m[10] );
+    gl.glUniform3f( loc( "u_sun" ), sun_dir.x, sun_dir.y, sun_dir.z );
+    gl.glUniform1f( loc( "u_daylight" ), daylight );
+    gl.glUniform1f( loc( "u_use_shadow" ), use_shadow ? 1.0f : 0.0f );
+    gl.glUniform3f( loc( "u_focus" ), focus.x, focus.y, focus.z );
+    gl.glUniform1f( loc( "u_fog_far" ), fog_far );
+    gl.glUniform3f( loc( "u_fog_color" ), fog.x, fog.y, fog.z );
+    gl.glActiveTexture( GL_TEXTURE1 );
+    gl.glBindTexture( GL_TEXTURE_2D, shadow_tex );
+    gl.glUniform1i( loc( "u_shadow" ), 1 );
+    gl.glUniform1i( loc( "u_tex" ), 0 );
+    gl.glActiveTexture( GL_TEXTURE0 );
+    gl.glDisable( GL_CULL_FACE );
+    for( const auto &r : ranges ) {
+        const int mode = r.first.first;
+        gl.glUniform1i( loc( "u_mode" ), mode );
+        gl.glBindTexture( GL_TEXTURE_2D, atlas.texture( r.first.second ) );
+        const bool cube = mode == sprite_cube;
+        gl.glBindVertexArray( cube ? cube_vao : quad_vao );
+        gl.glBindBuffer( GL_ARRAY_BUFFER, sprite_vbo );
+        const GLsizei stride = sizeof( sprite_instance );
+        const size_t base = r.second.first * sizeof( sprite_instance );
+        for( GLuint a = 0; a < 4; ++a ) {
+            gl.glVertexAttribPointer( 3 + a, 4, GL_FLOAT, GL_FALSE, stride,
+                                      reinterpret_cast<void *>( base + a * 4 * sizeof( float ) ) );
+        }
+        gl.glDrawArraysInstanced( GL_TRIANGLES, 0, cube ? 30 : 6, static_cast<GLsizei>( r.second.second ) );
+    }
+    gl.glBindVertexArray( 0 );
+    gl.glEnable( GL_CULL_FACE );
 }
 
 bool voxel_renderer::ensure_targets( int w, int h )
@@ -1564,17 +2034,11 @@ bool voxel_renderer::ensure_targets( int w, int h )
     return msaa_ok && resolve_ok;
 }
 
-int voxel_renderer::model_for( const vm_key &key )
+int voxel_renderer::upload_model( const voxel_mesh &mesh, bool emissive )
 {
-    const uint64_t packed = key.pack();
-    const auto it = model_lookup.find( packed );
-    if( it != model_lookup.end() ) {
-        return it->second;
-    }
     voxel_gl_api &gl = voxel_gl();
-    const voxel_mesh mesh = build_voxel_mesh( make_voxel_model( key ) );
     gpu_model model;
-    model.emissive = vm_is_emissive( key.kind );
+    model.emissive = emissive;
     const auto upload_mesh = [&gl]( const std::vector<voxel_vertex> &verts, gpu_mesh & out ) {
         if( verts.empty() ) {
             return;
@@ -1604,7 +2068,17 @@ int voxel_renderer::model_for( const vm_key &key )
     upload_mesh( mesh.opaque, model.opaque );
     upload_mesh( mesh.glass, model.glass );
     models.push_back( model );
-    const int idx = static_cast<int>( models.size() ) - 1;
+    return static_cast<int>( models.size() ) - 1;
+}
+
+int voxel_renderer::model_for( const vm_key &key )
+{
+    const uint64_t packed = key.pack();
+    const auto it = model_lookup.find( packed );
+    if( it != model_lookup.end() ) {
+        return it->second;
+    }
+    const int idx = upload_model( build_voxel_mesh( make_voxel_model( key ) ), vm_is_emissive( key.kind ) );
     model_lookup.emplace( packed, idx );
     return idx;
 }
@@ -1646,18 +2120,100 @@ vec3 voxel_renderer::animated( const void *id, const tripoint_bub_ms &p )
                  static_cast<float>( p.y() ) - d.y() * ( 1.0f - t ) };
 }
 
-void voxel_renderer::add_at( instance_lists &lists, const vm_key &key, const vec3 &pos, float lift,
-                             float yaw, float light, float desat, float scale, const voxel_rgb &tint )
+void voxel_renderer::reset_models()
 {
-    const int m = model_for( key );
+    voxel_gl_api &gl = voxel_gl();
+    for( gpu_model &m : models ) {
+        for( gpu_mesh *mesh : { &m.opaque, &m.glass } ) {
+            if( mesh->vao ) {
+                gl.glDeleteVertexArrays( 1, &mesh->vao );
+                gl.glDeleteBuffers( 1, &mesh->vbo );
+            }
+        }
+    }
+    models.clear();
+    model_lookup.clear();
+    custom_lookup.clear();
+    ter_styles.clear();
+    furn_styles.clear();
+    main_lists.per_model.clear();
+    main_lists.touched.clear();
+    shadow_lists.per_model.clear();
+    shadow_lists.touched.clear();
+}
+
+void voxel_renderer::sync_voxelset()
+{
+    const int gen = active_voxelset_generation();
+    if( gen != vset_generation ) {
+        reset_models();
+        vset_generation = gen;
+    }
+    vset = active_voxelset();
+}
+
+int voxel_renderer::custom_model( const voxelset_entry &entry, uint32_t pick )
+{
+    const std::string &file = entry.files[pick % entry.files.size()];
+    const std::string path = vset->dir + "/" + file;
+    const auto it = custom_lookup.find( path );
+    if( it != custom_lookup.end() ) {
+        return it->second;
+    }
+    std::string error;
+    const std::optional<voxel_grid> grid = load_vox_file( path, vset->voxels_per_tile, error );
+    int idx = -1;
+    if( grid ) {
+        voxel_grid g = *grid;
+        g.ox -= entry.offset[0];
+        g.oz -= entry.offset[2];
+        const voxel_mesh mesh = build_voxel_mesh( g, 1.0f / static_cast<float>( vset->voxels_per_tile ) );
+        idx = upload_model( mesh, entry.emissive );
+    } else {
+        DebugLog( D_WARNING, D_SDL ) << "voxel tileset model failed: " << error;
+    }
+    custom_lookup.emplace( path, idx );
+    return idx;
+}
+
+void voxel_renderer::add_at( instance_lists &lists, const vm_key &key, const vec3 &pos, float lift,
+                             float yaw, float light, float desat, float scale, const voxel_rgb &tint,
+                             const voxelset_entry *custom, uint32_t pick )
+{
+    const voxelset_entry *entry = custom;
+    if( entry == nullptr && vset != nullptr ) {
+        entry = vset->find_builtin( key.kind, key.material );
+    }
+    int m = -1;
+    voxel_rgb final_tint = tint;
+    if( entry != nullptr ) {
+        m = custom_model( *entry, pick );
+        if( m >= 0 ) {
+            if( !entry->rotates ) {
+                yaw = 0.0f;
+            }
+            if( entry->random_rotation ) {
+                yaw = static_cast<float>( ( pick >> 3 ) % 4 ) * pi * 0.5f;
+            }
+            scale *= entry->scale;
+            lift += static_cast<float>( entry->offset[1] ) / static_cast<float>( vset->voxels_per_tile );
+            if( entry->tint ) {
+                final_tint = key.color;
+            }
+        }
+    }
+    if( m < 0 ) {
+        m = model_for( key );
+    }
+    const voxel_rgb &tint_used = final_tint;
     instance inst{};
     inst.x = pos.x;
     inst.y = pos.y * level_height + lift;
     inst.z = pos.z;
     inst.yaw = yaw;
-    inst.r = tint.r / 255.0f;
-    inst.g = tint.g / 255.0f;
-    inst.b = tint.b / 255.0f;
+    inst.r = tint_used.r / 255.0f;
+    inst.g = tint_used.g / 255.0f;
+    inst.b = tint_used.b / 255.0f;
     inst.light = light;
     inst.scale = scale;
     inst.emissive = models[m].emissive ? 1.0f : 0.0f;
@@ -1671,7 +2227,12 @@ const tile_style &voxel_renderer::terrain_style( const ter_id &t )
     if( it != ter_styles.end() ) {
         return it->second;
     }
-    return ter_styles.emplace( t.to_i(), classify_terrain( t.obj() ) ).first->second;
+    tile_style st = classify_terrain( t.obj() );
+    st.custom = find_chain( vset, t.id().str(), map_looks_like );
+    if( st.custom ) {
+        st.draw = true;
+    }
+    return ter_styles.emplace( t.to_i(), st ).first->second;
 }
 
 const tile_style &voxel_renderer::furniture_style( const furn_id &f )
@@ -1680,7 +2241,12 @@ const tile_style &voxel_renderer::furniture_style( const furn_id &f )
     if( it != furn_styles.end() ) {
         return it->second;
     }
-    return furn_styles.emplace( f.to_i(), classify_furniture( f.obj() ) ).first->second;
+    tile_style st = classify_furniture( f.obj() );
+    st.custom = find_chain( vset, f.id().str(), map_looks_like );
+    if( st.custom ) {
+        st.draw = true;
+    }
+    return furn_styles.emplace( f.to_i(), st ).first->second;
 }
 
 bool voxel_renderer::wall_like_at( const tripoint_bub_ms &p )
@@ -1756,7 +2322,8 @@ void voxel_renderer::add_style( const tile_style &st, const tripoint_bub_ms &p, 
     if( st.kind == vm_kind::fire ) {
         lift = voxel_size;
     }
-    add( lists, k, p, lift, yaw, light, desat );
+    add_at( lists, k, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) },
+            lift, yaw, light, desat, 1.0f, { 255, 255, 255 }, st.custom, h );
 }
 
 float light_value( float ambient, lit_level ll )
@@ -1775,6 +2342,18 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     map &here = get_map();
     avatar &you = get_avatar();
     const visibility_variables &cache = here.get_visibility_variables_cache();
+    sync_voxelset();
+    sprite_style = get_option<std::string>( "VOXEL_STYLE" ) == "sprites";
+    if( sprite_style ) {
+        const std::string tileset = get_option<std::string>( "TILES" );
+        if( atlas.loaded_id != tileset ) {
+            atlas.load( tileset );
+        }
+        sprite_style = atlas.ok;
+    }
+    for( std::pair<const std::pair<int, int>, std::vector<sprite_instance>> &b : sprite_batches ) {
+        b.second.clear();
+    }
     main_lists.clear();
     shadow_lists.clear();
     drawing_shadow = false;
@@ -1803,13 +2382,34 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                 const tile_style &ts = terrain_style( ter );
                 if( seen ) {
                     const float light = light_value( here.ambient_light_at( p ), ll );
-                    add_style( ts, p, light, 0.0f, false );
+                    if( !sprite_style || !sprite_terrain( p, ter.id().str(), ts, light, 0.0f ) ) {
+                        add_style( ts, p, light, 0.0f, false );
+                    }
                     if( here.has_furn( p ) ) {
-                        add_style( furniture_style( here.furn( p ) ), p, light, 0.0f, true );
+                        const furn_id fu = here.furn( p );
+                        const tile_style &fs = furniture_style( fu );
+                        if( !sprite_style || !sprite_furniture( p, fu.id().str(), fs, light, 0.0f ) ) {
+                            add_style( fs, p, light, 0.0f, true );
+                        }
                     }
                     const optional_vpart_position ovp = here.veh_at( p );
                     if( ovp ) {
                         const vehicle &veh = ovp->vehicle();
+                        const float veh_yaw = static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f;
+                        bool vehicle_sprite = false;
+                        if( sprite_style ) {
+                            const vpart_display svd = veh.get_display_of_tile( ovp->mount_pos() );
+                            if( !svd.id.is_null() ) {
+                                const sprite_ref *vs = atlas.fg( svd.get_tileset_id() );
+                                if( vs == nullptr ) {
+                                    vs = find_sprite( "vp_" + svd.id.str(), vpart_looks_like );
+                                }
+                                if( vs ) {
+                                    add_sprite( sprite_flat, *vs, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, veh_yaw, 0.4f, light, 0.0f );
+                                    vehicle_sprite = true;
+                                }
+                            }
+                        }
                         vm_key vk;
                         vk.kind = vm_kind::vehicle;
                         vk.color2 = rgb( 70, 60, 55 );
@@ -1876,7 +2476,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                                 vk.color = pc;
                             }
                         }
-                        if( any ) {
+                        if( any && !vehicle_sprite ) {
                             if( vk.color.r == 0 && vk.color.g == 0 && vk.color.b == 0 ) {
                                 vk.color = rgb( 120, 122, 128 );
                             }
@@ -1884,15 +2484,26 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                                 vk.variant &= ~vmx_cargo;
                             }
                             const float yaw = static_cast<float>( units::to_radians( veh.face.dir() ) ) + pi * 0.5f;
-                            add( main_lists, vk, p, 0.0f, yaw, light, 0.0f );
+                            const vpart_display vd = veh.get_display_of_tile( ovp->mount_pos() );
+                            const voxelset_entry *ve = vd.id.is_null() ? nullptr : find_chain( vset, "vp_" + vd.id.str(),
+                                                       vpart_looks_like );
+                            add_at( main_lists, vk, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f, yaw, light, 0.0f, 1.0f, { 255, 255, 255 }, ve );
                         }
                     }
-                    if( here.can_see_trap_at( p, you ) ) {
+                    const sprite_ref *trap_sprite = nullptr;
+                    if( sprite_style && here.can_see_trap_at( p, you ) ) {
+                        trap_sprite = atlas.fg( here.tr_at( p ).id.str() );
+                        if( trap_sprite ) {
+                            add_sprite( sprite_flat, *trap_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f, 0.016f, light, 0.0f );
+                        }
+                    }
+                    if( trap_sprite == nullptr && here.can_see_trap_at( p, you ) ) {
                         const trap &tr = here.tr_at( p );
                         vm_key tk;
                         tk.kind = vm_kind::trap;
                         tk.color = soften( to_rgb( tr.color ) );
-                        add( main_lists, tk, p, voxel_size, 0.0f, light, 0.0f );
+                        add_at( main_lists, tk, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, voxel_size, 0.0f, light, 0.0f, 1.0f, { 255, 255, 255 },
+                                find_chain( vset, tr.id.str(), no_looks_like ) );
                     }
                     if( here.has_items( p ) ) {
                         map_stack stack = here.i_at( p );
@@ -1907,14 +2518,22 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                         const float lift = ovp ? voxel_size * 4.0f : here.has_furn( p ) &&
                                            furniture_style( here.furn( p ) ).kind == vm_kind::table ? voxel_size * 6.0f : voxel_size;
                         const uint32_t ih = voxel_hash( x, y, z, 5 );
-                        if( top ) {
+                        const sprite_ref *item_sprite = sprite_style && top ? find_sprite( top->typeId().str(),
+                                                        item_looks_like ) : nullptr;
+                        if( item_sprite ) {
+                            add_sprite( sprite_flat, *item_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f, lift + 0.02f, light, 0.0f );
+                        } else if( top ) {
                             vm_key ik;
                             ik.kind = item_kind( *top );
                             ik.color = soften( to_rgb( top->color() ) );
                             if( ik.kind == vm_kind::item_corpse ) {
                                 ik.color = voxel_mix( ik.color, rgb( 140, 120, 100 ), 0.5f );
                             }
-                            if( ik.kind == vm_kind::item_pile ) {
+                            const voxelset_entry *ie = find_chain( vset, top->typeId().str(), item_looks_like );
+                            if( ie ) {
+                                add_at( main_lists, ik, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, lift, static_cast<float>( ih % 8 ) * pi * 0.25f, light, 0.0f,
+                                        1.0f, { 255, 255, 255 }, ie, ih );
+                            } else if( ik.kind == vm_kind::item_pile ) {
                                 ik.variant = static_cast<uint8_t>( std::min( count, 3 ) - 1 + 3 * ( ih % 3 ) );
                                 add( main_lists, ik, p, lift, 0.0f, light, 0.0f, 1.0f, ik.color );
                             } else {
@@ -1922,7 +2541,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                                 add( main_lists, ik, p, lift, static_cast<float>( ih % 8 ) * pi * 0.25f, light, 0.0f );
                             }
                         }
-                        if( count > 1 ) {
+                        if( count > 1 && !item_sprite ) {
                             vm_key pk;
                             pk.kind = vm_kind::item_pile;
                             pk.variant = static_cast<uint8_t>( std::min( count - 1, 3 ) - 1 + 3 * ( ( ih >> 4 ) % 3 ) );
@@ -1953,10 +2572,15 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                                 fk.variant = static_cast<uint8_t>( intensity );
                                 lift = 0.0f;
                             } else {
-                                draw = false;
+                                draw = find_chain( vset, fid, no_looks_like ) != nullptr;
                             }
-                            if( draw ) {
-                                add( main_lists, fk, p, lift, 0.0f, light, 0.0f );
+                            const sprite_ref *field_sprite = sprite_style ? atlas.fg( fid ) : nullptr;
+                            if( field_sprite ) {
+                                add_sprite( fk.kind == vm_kind::fire ? sprite_billboard : sprite_flat, *field_sprite, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, 0.0f,
+                                            fk.kind == vm_kind::fire ? voxel_size : 0.02f, light, 0.0f );
+                            } else if( draw ) {
+                                add_at( main_lists, fk, vec3{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) }, lift, 0.0f, light, 0.0f, 1.0f, { 255, 255, 255 },
+                                        find_chain( vset, fid, no_looks_like ), voxel_hash( x, y, z, 11 ) );
                             }
                         }
                     }
@@ -1966,13 +2590,19 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                         const memorized_tile &mt = you.get_memorized_tile( abs );
                         const ter_str_id tid( mt.get_ter_id() );
                         if( !mt.get_ter_id().empty() && tid.is_valid() ) {
-                            add_style( terrain_style( tid.id() ), p, memory_light, memory_desat, false );
+                            const tile_style &mts = terrain_style( tid.id() );
+                            if( !sprite_style || !sprite_terrain( p, mt.get_ter_id(), mts, memory_light, memory_desat ) ) {
+                                add_style( mts, p, memory_light, memory_desat, false );
+                            }
                         }
                         const std::string &dec = mt.get_dec_id();
                         if( dec.compare( 0, 2, "f_" ) == 0 ) {
                             const furn_str_id fid( dec );
                             if( fid.is_valid() ) {
-                                add_style( furniture_style( fid.id() ), p, memory_light, memory_desat, true );
+                                const tile_style &mfs = furniture_style( fid.id() );
+                                if( !sprite_style || !sprite_furniture( p, dec, mfs, memory_light, memory_desat ) ) {
+                                    add_style( mfs, p, memory_light, memory_desat, true );
+                                }
                             }
                         } else if( dec.compare( 0, 3, "vp_" ) == 0 ) {
                             vm_key vk;
@@ -2052,7 +2682,16 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         if( &ch == &you ) {
             avatar_display = pos;
         }
-        add_at( main_lists, k, pos, voxel_size, yaw, light, 0.0f, scale );
+        if( sprite_style && sprite_character( ch, pos, light ) ) {
+            return;
+        }
+        const bool is_avatar = &ch == &you;
+        const std::string base = is_avatar ? "player" : "npc";
+        const voxelset_entry *ce = vset ? vset->find_id( base + ( ch.male ? "_male" : "_female" ) ) : nullptr;
+        if( ce == nullptr && vset ) {
+            ce = vset->find_id( base );
+        }
+        add_at( main_lists, k, pos, voxel_size, yaw, light, 0.0f, scale, { 255, 255, 255 }, ce );
         if( const std::optional<vm_key> hk = held_key( ch ) ) {
             add_at( main_lists, *hk, pos, voxel_size, yaw, light, 0.0f, scale );
         }
@@ -2077,8 +2716,17 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         if( !in_view( p ) || !you.sees( here, mon ) ) {
             continue;
         }
-        add_at( main_lists, monster_key( mon ), animated( &mon, p ), voxel_size, face_towards( p, you_pos ),
-                creature_light( p ), 0.0f, size_scale( mon.get_size() ) );
+        const vec3 mpos = animated( &mon, p );
+        if( sprite_style ) {
+            if( const sprite_ref *ms = find_sprite( mon.type->id.str(), monster_looks_like ) ) {
+                add_sprite( sprite_billboard, *ms, mpos, 0.0f, voxel_size, creature_light( p ), 0.0f,
+                            mon.facing == FacingDirection::LEFT );
+                continue;
+            }
+        }
+        add_at( main_lists, monster_key( mon ), mpos, voxel_size, face_towards( p, you_pos ),
+                creature_light( p ), 0.0f, size_scale( mon.get_size() ), { 255, 255, 255 },
+                find_chain( vset, mon.type->id.str(), monster_looks_like ) );
     }
 
     for( auto it = motions.begin(); it != motions.end(); ) {
@@ -2333,6 +2981,9 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     gl.glUniform1i( gl.glGetUniformLocation( main_program, "u_shadow" ), 0 );
 
     draw_pass( main_lists, false, main_program );
+    draw_sprites( view, flipped, light_vp, sun_dir, daylight, use_shadow, focus, static_cast<float>( radius ),
+                  fog );
+    gl.glUseProgram( main_program );
 
     gl.glEnable( GL_BLEND );
     gl.glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );

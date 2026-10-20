@@ -66,6 +66,6 @@ struct voxel_mesh {
 constexpr float voxel_size = 1.0f / 8.0f;
 constexpr int voxel_level_height = 16;
 
-voxel_mesh build_voxel_mesh( const voxel_grid &grid );
+voxel_mesh build_voxel_mesh( const voxel_grid &grid, float vsize = voxel_size );
 
 #endif // CATA_SRC_VOXEL_MODEL_H

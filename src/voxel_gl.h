@@ -55,6 +55,7 @@
     X( glGetShaderiv ) \
     X( glGetUniformLocation ) \
     X( glLinkProgram ) \
+    X( glUniform4f ) \
     X( glPixelStorei ) \
     X( glPolygonOffset ) \
     X( glReadBuffer ) \

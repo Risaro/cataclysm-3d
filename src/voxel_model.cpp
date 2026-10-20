@@ -174,7 +174,7 @@ void voxel_grid::sphere( float cx, float cy, float cz, float rx, float ry, float
     }
 }
 
-voxel_mesh build_voxel_mesh( const voxel_grid &grid )
+voxel_mesh build_voxel_mesh( const voxel_grid &grid, float vsize )
 {
     voxel_mesh mesh;
     const std::array<int, 3> dims = { grid.sx, grid.sy, grid.sz };
@@ -286,7 +286,7 @@ voxel_mesh build_voxel_mesh( const voxel_grid &grid )
                         pos[va] = static_cast<float>( j + cv );
                         ao[c] = ao_curve[( ao_bits >> ( c * 2 ) ) & 3];
                         quad[c] = voxel_vertex{
-                            ( pos[0] - grid.ox ) * voxel_size, pos[1] * voxel_size, ( pos[2] - grid.oz ) * voxel_size,
+                            ( pos[0] - grid.ox ) * vsize, pos[1] * vsize, ( pos[2] - grid.oz ) * vsize,
                             normal[0], normal[1], normal[2], r, g, b, ao[c]
                         };
                     }
