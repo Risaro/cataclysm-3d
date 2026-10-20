@@ -49,10 +49,54 @@ Select it in Settings, Graphics, Tileset options, `3D voxel tileset`. The list i
 | `random_rotation` | Turns the model by a random multiple of 90 degrees per tile. |
 | `tint` | Multiplies the model by the color the game gives the object, so one white model can serve furniture of every color. |
 | `emissive` | The model glows and ignores darkness, like fire. |
+| `animations` | Frame by frame animations per state, see below. |
+| `mesh_height` | For `.obj` files: fit the model to this many voxels of height. |
+| `mesh_scale` | For `.obj` files: scale factor on top of one OBJ unit per tile. |
 
 Lookup order for an object: its exact `id`, then the `looks_like` chain from the game data, then a
 `builtin` override of its model type, then the built-in procedural model. A set can start with a
 single model and grow over time.
+
+## Meshes from regular 3D tools
+
+Any `file` or animation frame may be a Wavefront `.obj` mesh instead of a `.vox` file. The game
+voxelizes it when it loads, using the material colors and the `map_Kd` texture of its `.mtl` file.
+One OBJ unit is one map tile, so a Blender model built in meters has the right size; `mesh_height`
+or `mesh_scale` change that. Models face `-Z` in the OBJ, which is north in game, with `+Y` up.
+
+To bake a mesh into a `.vox` file ahead of time, for example to touch it up in MagicaVoxel:
+
+```sh
+tools/voxelize/build.sh
+./voxelize model.obj model.vox --voxels-per-tile 8 --height 13
+```
+
+## Animations
+
+Creatures can play voxel flipbook animations. Every frame is its own `.vox` or `.obj` file, so an
+animation made in Blender can be exported as one OBJ per key frame and used directly.
+
+```json
+{
+  "id": "mon_zombie",
+  "animations": {
+    "idle": { "files": [ "zombie/idle_0.vox", "zombie/idle_1.vox" ], "fps": 2 },
+    "walk": { "files": [ "zombie/walk_0.obj", "zombie/walk_1.obj", "zombie/walk_2.obj", "zombie/walk_3.obj" ], "fps": 8 },
+    "attack": { "files": [ "zombie/attack_0.vox", "zombie/attack_1.vox" ], "fps": 6 },
+    "death": { "files": [ "zombie/death_0.vox", "zombie/death_1.vox", "zombie/death_2.vox" ], "fps": 6 }
+  }
+}
+```
+
+States: `idle`, `walk` while moving between tiles, `attack` while lunging, `death` once when the
+monster dies (it does not loop). A missing state falls back to `idle`.
+
+## Voxelized 2D tilesets
+
+The 3D view style `Voxelized tileset` needs no voxel tileset at all: it turns every sprite of the
+current 2D tileset into a voxel model on the fly. Floor sprites become pixel tiles, wall sprites
+become extruded blocks, and standing sprites such as creatures, furniture and trees are inflated
+from their silhouette into a rounded volume. Any 2D tileset, including your own, works this way.
 
 ## Model conventions
 

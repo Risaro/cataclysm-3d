@@ -2709,10 +2709,11 @@ void options_manager::add_options_graphics()
         get_option( "VOXEL_TILESET" ).setPrerequisite( "VOXEL_VIEW" );
 
         add( "VOXEL_STYLE", page_id, to_translation( "3D view style" ),
-             to_translation( "Voxels draws everything as voxel models.  Tileset sprites textures the ground with the current 2D tileset and shows creatures, items, furniture and vehicles as sprites standing in the 3D world." ),
+             to_translation( "Voxels draws everything as voxel models.  Tileset sprites textures the ground with the current 2D tileset and shows creatures, items, furniture and vehicles as sprites standing in the 3D world.  Voxelized tileset turns every sprite of the current 2D tileset into a voxel model automatically." ),
         {
             { "voxels", to_translation( "Voxels" ) },
-            { "sprites", to_translation( "Tileset sprites" ) }
+            { "sprites", to_translation( "Tileset sprites" ) },
+            { "voxelized", to_translation( "Voxelized tileset" ) }
         },
         "voxels", COPT_CURSES_HIDE
            );

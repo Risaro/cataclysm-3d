@@ -51,6 +51,7 @@
 #include "voxel_models.h"
 #include "voxel_sprites.h"
 #include "voxel_tileset.h"
+#include "voxel_import.h"
 #include "voxel_vox.h"
 #include "vpart_position.h"
 #include "weather.h"
@@ -1477,6 +1478,9 @@ class voxel_renderer
                      float light, float desat, float scale = 1.0f, const voxel_rgb &tint = { 255, 255, 255 },
                      const voxelset_entry *custom = nullptr, uint32_t pick = 0 );
         int custom_model( const voxelset_entry &entry, uint32_t pick );
+        int custom_model_file( const voxelset_entry &entry, const std::string &file );
+        const char *next_state = nullptr;
+        float next_state_time = 0.0f;
         void add_sprite( sprite_mode mode, const sprite_ref &spr, const vec3 &pos, float yaw, float lift,
                          float light, float desat, bool flip = false, float height = 1.0f, float layer = 0.0f );
         template<typename Next>
@@ -1537,6 +1541,10 @@ class voxel_renderer
         int vset_generation = -1;
         sprite_atlas atlas;
         bool sprite_style = false;
+        bool voxelized_style = false;
+        std::unordered_map<uint64_t, int> voxelized_models;
+        int voxelized_model( const sprite_ref &spr, sprite_mode mode, bool flip, float height );
+        voxel_grid voxelize_sprite( const sprite_ref &spr, sprite_mode mode, bool flip, float height ) const;
         bool cutaway = false;
         bool night = false;
         tripoint_bub_ms cut_center;
@@ -1577,6 +1585,7 @@ class voxel_renderer
             float light = 1.0f;
             const voxelset_entry *custom = nullptr;
             uint64_t start = 0;
+            float duration = 450.0f;
         };
         std::unordered_map<const void *, ghost> visible_monsters;
         std::vector<ghost> dying;
@@ -2337,9 +2346,133 @@ const sprite_ref *voxel_renderer::find_sprite( const std::string &id, Next next,
     return nullptr;
 }
 
+voxel_grid voxel_renderer::voxelize_sprite( const sprite_ref &spr, sprite_mode mode, bool flip,
+        float height ) const
+{
+    const int tw = std::max( 1, atlas.tile_width );
+    const int w = spr.pw;
+    const int h = spr.ph;
+    const auto px = [&]( int x, int y ) -> const uint8_t * {
+        const uint8_t *p = atlas.pixel( spr, flip ? w - 1 - x : x, y );
+        return p && p[3] >= 128 ? p : nullptr;
+    };
+    if( mode == sprite_flat ) {
+        voxel_grid g( w, 1, h, ( w - tw ) / 2, ( h - tw ) / 2 );
+        for( int y = 0; y < h; ++y ) {
+            for( int x = 0; x < w; ++x ) {
+                if( const uint8_t *p = px( x, y ) ) {
+                    g.set( x, 0, y, { p[0], p[1], p[2] } );
+                }
+            }
+        }
+        return g;
+    }
+    if( mode == sprite_cube ) {
+        const int gh = std::clamp( static_cast<int>( height * tw + 0.5f ), 1, 256 );
+        voxel_grid g( w, gh, h, ( w - tw ) / 2, ( h - tw ) / 2 );
+        for( int z = 0; z < h; ++z ) {
+            for( int x = 0; x < w; ++x ) {
+                const uint8_t *p = px( x, z );
+                if( !p ) {
+                    continue;
+                }
+                for( int y = 0; y < gh; ++y ) {
+                    const float shade = 0.72f + 0.28f * static_cast<float>( y ) / gh;
+                    g.set( x, y, z, voxel_shade( { p[0], p[1], p[2] }, y == gh - 1 ? 1.0f : shade ) );
+                }
+            }
+        }
+        return g;
+    }
+    std::vector<int> dist( static_cast<size_t>( w ) * h, 0 );
+    const int far = w + h;
+    for( int y = 0; y < h; ++y ) {
+        for( int x = 0; x < w; ++x ) {
+            dist[static_cast<size_t>( y ) * w + x] = px( x, y ) ? far : 0;
+        }
+    }
+    for( int pass = 0; pass < 2; ++pass ) {
+        for( int i = 0; i < w * h; ++i ) {
+            const int idx = pass == 0 ? i : w * h - 1 - i;
+            const int x = idx % w;
+            const int y = idx / w;
+            int &d = dist[idx];
+            if( d == 0 ) {
+                continue;
+            }
+            const int dx = pass == 0 ? -1 : 1;
+            const int nx = x + dx;
+            const int ny = y + dx;
+            const int left = nx >= 0 && nx < w ? dist[static_cast<size_t>( y ) * w + nx] : 0;
+            const int up = ny >= 0 && ny < h ? dist[static_cast<size_t>( ny ) * w + x] : 0;
+            d = std::min( d, std::min( left, up ) + 1 );
+        }
+    }
+    const int half = std::max( 1, w / 6 );
+    const int depth = half * 2 + 1;
+    voxel_grid g( w, h, depth, ( w - tw ) / 2, ( depth - tw ) / 2 );
+    for( int y = 0; y < h; ++y ) {
+        for( int x = 0; x < w; ++x ) {
+            const uint8_t *p = px( x, y );
+            if( !p ) {
+                continue;
+            }
+            const int d = dist[static_cast<size_t>( y ) * w + x];
+            const int t = std::min( half, static_cast<int>( std::ceil( std::sqrt( static_cast<float>( d ) ) * 1.3f ) ) );
+            const voxel_rgb c{ p[0], p[1], p[2] };
+            for( int z = half - t; z <= half + t; ++z ) {
+                g.set( x, h - 1 - y, z, c );
+            }
+        }
+    }
+    return g;
+}
+
+int voxel_renderer::voxelized_model( const sprite_ref &spr, sprite_mode mode, bool flip, float height )
+{
+    const uint64_t key = ( static_cast<uint64_t>( spr.index ) << 20 ) | ( static_cast<uint64_t>( mode ) << 17 ) |
+                         ( static_cast<uint64_t>( flip ) << 16 ) | static_cast<uint64_t>( std::clamp( height, 0.0f,
+                                 60.0f ) * 1000.0f );
+    const auto it = voxelized_models.find( key );
+    if( it != voxelized_models.end() ) {
+        return it->second;
+    }
+    const voxel_grid g = voxelize_sprite( spr, mode, flip, height );
+    const int m = upload_model( build_voxel_mesh( g, 1.0f / static_cast<float>( std::max( 1,
+                                atlas.tile_width ) ) ), false );
+    voxelized_models.emplace( key, m );
+    return m;
+}
+
 void voxel_renderer::add_sprite( sprite_mode mode, const sprite_ref &spr, const vec3 &pos, float yaw,
                                  float lift, float light, float desat, bool flip, float height, float layer )
 {
+    if( voxelized_style ) {
+        const int m = voxelized_model( spr, mode, flip, height );
+        if( m >= 0 ) {
+            instance inst{};
+            inst.x = pos.x;
+            inst.z = pos.z;
+            if( mode == sprite_billboard ) {
+                inst.y = pos.y * level_height + lift + spr.shift_y;
+                inst.yaw = pi - cam.yaw;
+            } else if( mode == sprite_flat ) {
+                inst.y = pos.y * level_height + lift;
+                inst.yaw = yaw;
+            } else {
+                inst.y = pos.y * level_height;
+                inst.yaw = 0.0f;
+            }
+            inst.r = 1.0f;
+            inst.g = 1.0f;
+            inst.b = 1.0f;
+            inst.light = light;
+            inst.scale = 1.0f + layer * 3.0f;
+            inst.desat = desat;
+            ( drawing_shadow ? shadow_lists : main_lists ).add( m, inst );
+        }
+        return;
+    }
     sprite_instance si{};
     si.x = pos.x;
     si.y = pos.y * level_height + ( mode == sprite_flat ? 0.0f : lift );
@@ -2750,6 +2883,7 @@ void voxel_renderer::reset_models()
     models.clear();
     model_lookup.clear();
     custom_lookup.clear();
+    voxelized_models.clear();
     ter_styles.clear();
     furn_styles.clear();
     main_lists.per_model.clear();
@@ -2770,14 +2904,27 @@ void voxel_renderer::sync_voxelset()
 
 int voxel_renderer::custom_model( const voxelset_entry &entry, uint32_t pick )
 {
-    const std::string &file = entry.files[pick % entry.files.size()];
+    return custom_model_file( entry, entry.files[pick % entry.files.size()] );
+}
+
+int voxel_renderer::custom_model_file( const voxelset_entry &entry, const std::string &file )
+{
     const std::string path = vset->dir + "/" + file;
     const auto it = custom_lookup.find( path );
     if( it != custom_lookup.end() ) {
         return it->second;
     }
     std::string error;
-    const std::optional<voxel_grid> grid = load_vox_file( path, vset->voxels_per_tile, error );
+    std::optional<voxel_grid> grid;
+    if( is_mesh_file( path ) ) {
+        voxel_import_options options;
+        options.voxels_per_tile = vset->voxels_per_tile;
+        options.height_voxels = entry.mesh_height;
+        options.scale = entry.mesh_scale;
+        grid = voxelize_obj( path, options, error );
+    } else {
+        grid = load_vox_file( path, vset->voxels_per_tile, error );
+    }
     int idx = -1;
     if( grid ) {
         voxel_grid g = *grid;
@@ -2803,7 +2950,24 @@ void voxel_renderer::add_at( instance_lists &lists, const vm_key &key, const vec
     int m = -1;
     voxel_rgb final_tint = tint;
     if( entry != nullptr ) {
-        m = custom_model( *entry, pick );
+        const voxelset_animation *anim = nullptr;
+        if( !entry->animations.empty() ) {
+            const auto found = entry->animations.find( next_state ? next_state : "idle" );
+            const auto idle = entry->animations.find( "idle" );
+            anim = found != entry->animations.end() ? &found->second : idle != entry->animations.end() ?
+                   &idle->second : nullptr;
+        }
+        if( anim ) {
+            const int frames = static_cast<int>( anim->files.size() );
+            int frame = static_cast<int>( next_state_time * anim->fps );
+            frame = anim->loop ? frame % frames : std::min( frame, frames - 1 );
+            m = custom_model_file( *entry, anim->files[std::max( frame, 0 )] );
+            if( frames > 1 ) {
+                ambient = true;
+            }
+        } else {
+            m = custom_model( *entry, pick );
+        }
         if( m >= 0 ) {
             if( !entry->rotates ) {
                 yaw = 0.0f;
@@ -2818,6 +2982,8 @@ void voxel_renderer::add_at( instance_lists &lists, const vm_key &key, const vec
             }
         }
     }
+    next_state = nullptr;
+    next_state_time = 0.0f;
     if( m < 0 ) {
         m = model_for( key );
     }
@@ -3075,13 +3241,18 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
     }
     night = daylight < 0.25f;
     cut_center = get_avatar().pos_bub( get_map() );
-    sprite_style = get_option<std::string>( "VOXEL_STYLE" ) == "sprites";
+    const std::string style = get_option<std::string>( "VOXEL_STYLE" );
+    sprite_style = style == "sprites" || style == "voxelized";
+    voxelized_style = style == "voxelized";
     if( sprite_style ) {
         const std::string tileset = get_option<std::string>( "TILES" );
         if( atlas.loaded_id != tileset ) {
             atlas.load( tileset );
+            voxelized_models.clear();
+            cache_valid = false;
         }
         sprite_style = atlas.ok;
+        voxelized_style = voxelized_style && atlas.ok;
     }
     for( std::pair<const std::pair<int, int>, std::vector<sprite_instance>> &b : sprite_batches ) {
         b.second.clear();
@@ -3545,6 +3716,8 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         const voxel_rgb tint = flash_tint( ch, pos );
         last_arm_swing = 0.0f;
         if( ce ) {
+            next_state = phase >= 0.0f ? "walk" : attack > 0.0f ? "attack" : "idle";
+            next_state_time = static_cast<float>( now_ms % 1000000 ) / 1000.0f;
             add_at( main_lists, k, pos, voxel_size, yaw, light, 0.0f, scale, tint, ce );
         } else {
             add_creature_parts( k, pos, yaw, light, scale, tint, phase, attack );
@@ -3628,6 +3801,8 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         seen_monsters[&mon] = gh;
         const voxel_rgb mtint = flash_tint( mon, mpos );
         if( gh.custom ) {
+            next_state = mphase >= 0.0f ? "walk" : mattack > 0.0f ? "attack" : "idle";
+            next_state_time = static_cast<float>( now_ms % 1000000 ) / 1000.0f;
             add_at( main_lists, gh.key, mpos, voxel_size, gh.yaw, gh.light, 0.0f, gh.scale, mtint, gh.custom );
         } else {
             add_creature_parts( gh.key, mpos, gh.yaw, gh.light, gh.scale, mtint, mphase, mattack );
@@ -3647,12 +3822,18 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         if( !alive.count( prev.first ) ) {
             ghost gh = prev.second;
             gh.start = now_ms;
+            if( gh.custom ) {
+                const auto death = gh.custom->animations.find( "death" );
+                if( death != gh.custom->animations.end() && death->second.fps > 0.0f ) {
+                    gh.duration = death->second.files.size() * 1000.0f / death->second.fps + 400.0f;
+                }
+            }
             dying.push_back( gh );
         }
     }
     visible_monsters = std::move( seen_monsters );
     for( auto it = dying.begin(); it != dying.end(); ) {
-        const float t = static_cast<float>( now_ms - it->start ) / 450.0f;
+        const float t = static_cast<float>( now_ms - it->start ) / it->duration;
         if( t >= 1.0f ) {
             it = dying.erase( it );
             continue;
@@ -3660,8 +3841,14 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         animating = true;
         const float fade = 1.0f - t;
         const voxel_rgb tint{ 255, static_cast<uint8_t>( 120 * fade ), static_cast<uint8_t>( 110 * fade ) };
-        add_at( main_lists, it->key, it->pos, voxel_size - t * t * level_height * 0.45f, it->yaw + t * 0.6f,
-                it->light, 0.0f, it->scale * ( 1.0f - 0.25f * t ), tint, it->custom );
+        const bool has_death = it->custom && it->custom->animations.count( "death" ) != 0;
+        if( has_death ) {
+            next_state = "death";
+            next_state_time = static_cast<float>( now_ms - it->start ) / 1000.0f;
+        }
+        add_at( main_lists, it->key, it->pos, has_death ? voxel_size : voxel_size - t * t * level_height * 0.45f,
+                has_death ? it->yaw : it->yaw + t * 0.6f, it->light, 0.0f,
+                has_death ? it->scale : it->scale * ( 1.0f - 0.25f * t ), tint, it->custom );
         ++it;
     }
 

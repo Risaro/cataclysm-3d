@@ -58,6 +58,14 @@ Keep these rules in mind:
   windows.
 * **Size limit.** Up to 256 voxels in each direction. Small models are faster.
 
+### Working in Blender or another 3D tool
+
+You can skip voxel editors entirely. Export the model as Wavefront `.obj` with its `.mtl` and
+texture next to it, and point `file` at the `.obj`: the game voxelizes it when it loads. Build in
+meters, one meter per tile, facing `-Z` with `+Y` up. Keep shapes chunky: details smaller than an
+eighth of a meter disappear at 8 voxels per tile. For an animation, export one `.obj` per key frame
+and list them under `animations`.
+
 ## 5. Register it
 
 Add an entry to the `models` list:

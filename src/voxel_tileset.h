@@ -3,6 +3,7 @@
 #define CATA_SRC_VOXEL_TILESET_H
 
 #include <array>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -10,8 +11,17 @@
 
 #include "voxel_models.h"
 
+struct voxelset_animation {
+    std::vector<std::string> files;
+    float fps = 8.0f;
+    bool loop = true;
+};
+
 struct voxelset_entry {
     std::vector<std::string> files;
+    std::map<std::string, voxelset_animation> animations;
+    float mesh_height = 0.0f;
+    float mesh_scale = 1.0f;
     std::array<int, 3> offset = { 0, 0, 0 };
     float scale = 1.0f;
     bool random_rotation = false;

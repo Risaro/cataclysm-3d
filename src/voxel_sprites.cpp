@@ -62,6 +62,7 @@ void sprite_atlas::release()
         gl.glDeleteTextures( 1, &t );
     }
     textures.clear();
+    pixels.clear();
     sprites.clear();
     tiles.clear();
     subtiles.clear();
@@ -93,6 +94,7 @@ bool sprite_atlas::load( const std::string &tileset_id )
                 tile_h = info.get_int( "height", 32 );
             }
         }
+        tile_width = tile_w;
         if( !root.has_array( "tiles-new" ) ) {
             return;
         }
@@ -125,6 +127,17 @@ bool sprite_atlas::load( const std::string &tileset_id )
             gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
             gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
             textures.push_back( tex );
+            sheet_pixels sp;
+            sp.w = surf->w;
+            sp.h = surf->h;
+            sp.rgba.resize( static_cast<size_t>( sp.w ) * sp.h * 4 );
+            for( int row = 0; row < sp.h; ++row ) {
+                const uint8_t *src = static_cast<const uint8_t *>( surf->pixels ) + static_cast<size_t>
+                                     ( row ) * surf->pitch;
+                std::copy( src, src + static_cast<size_t>( sp.w ) * 4, sp.rgba.begin() + static_cast<size_t>
+                           ( row ) * sp.w * 4 );
+            }
+            pixels.push_back( std::move( sp ) );
             const int sheet_index = static_cast<int>( textures.size() ) - 1;
             const int cols = std::max( 1, surf->w / sw );
             const int rows = std::max( 1, surf->h / sh );
@@ -142,6 +155,11 @@ bool sprite_atlas::load( const std::string &tileset_id )
                     s.h = static_cast<float>( sh ) / tile_w;
                     s.shift_x = ( ox + sw * 0.5f - tile_w * 0.5f ) / tile_w;
                     s.shift_y = static_cast<float>( tile_h - ( oy + sh ) ) / tile_w;
+                    s.index = static_cast<int>( sprites.size() );
+                    s.px = c * sw;
+                    s.py = r * sh;
+                    s.pw = sw;
+                    s.ph = sh;
                     sprites.push_back( s );
                 }
             }
@@ -248,6 +266,21 @@ const sprite_ref *sprite_atlas::subtile( const std::string &id, const std::strin
         return nullptr;
     }
     return &sprites[index];
+}
+
+const uint8_t *sprite_atlas::pixel( const sprite_ref &spr, int x, int y ) const
+{
+    if( spr.sheet < 0 || spr.sheet >= static_cast<int>( pixels.size() ) || x < 0 || y < 0 || x >= spr.pw ||
+        y >= spr.ph ) {
+        return nullptr;
+    }
+    const sheet_pixels &sp = pixels[spr.sheet];
+    const int gx = spr.px + x;
+    const int gy = spr.py + y;
+    if( gx >= sp.w || gy >= sp.h ) {
+        return nullptr;
+    }
+    return &sp.rgba[( static_cast<size_t>( gy ) * sp.w + gx ) * 4];
 }
 
 GLuint sprite_atlas::texture( int sheet ) const

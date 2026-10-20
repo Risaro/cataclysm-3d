@@ -20,6 +20,11 @@ struct sprite_ref {
     float h = 1.0f;
     float shift_x = 0.0f;
     float shift_y = 0.0f;
+    int index = -1;
+    int px = 0;
+    int py = 0;
+    int pw = 0;
+    int ph = 0;
 };
 
 class sprite_atlas
@@ -33,6 +38,8 @@ class sprite_atlas
                                    int &extra_rotation ) const;
         GLuint texture( int sheet ) const;
         int sheet_count() const;
+        const uint8_t *pixel( const sprite_ref &spr, int x, int y ) const;
+        int tile_width = 32;
 
         std::string loaded_id;
         bool ok = false;
@@ -46,6 +53,12 @@ class sprite_atlas
         std::unordered_map<std::string, tile_entry> tiles;
         std::unordered_map<std::string, std::vector<int>> subtiles;
         std::vector<GLuint> textures;
+        struct sheet_pixels {
+            int w = 0;
+            int h = 0;
+            std::vector<uint8_t> rgba;
+        };
+        std::vector<sheet_pixels> pixels;
 };
 
 #endif

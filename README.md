@@ -26,7 +26,10 @@ sun shadows, the game's own light map, smooth movement and 3D effects.
   procedurally generated voxel models.
 * **Tileset sprites style** - the ground is textured with your 2D tileset (UltimateCataclysm and
   others) and creatures, items and furniture stand in the world as sprites.
-* **Voxel tilesets** - artists can replace any model with MagicaVoxel `.vox` files. See
+* **Voxelized tileset style** - any 2D tileset is turned into voxel models automatically: floors
+  become pixel tiles, walls become blocks, creatures and furniture are inflated from their sprites.
+* **Voxel tilesets** - artists can replace any model with MagicaVoxel `.vox` files or plain `.obj`
+  meshes from Blender, which the game voxelizes on load, including frame by frame animations. See
   [doc/VOXEL_TILESETS.md](doc/VOXEL_TILESETS.md) and the step by step
   [doc/VOXEL_MODELING_GUIDE.md](doc/VOXEL_MODELING_GUIDE.md). `gfx/voxel/example` is a small set
   to learn from.

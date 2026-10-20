@@ -47,9 +47,30 @@ bool read_voxelset( const std::filesystem::path &dir, voxelset &out )
             } else if( entry.has_string( "file" ) ) {
                 e.files.push_back( entry.get_string( "file" ) );
             }
+            if( entry.has_object( "animations" ) ) {
+                const JsonObject anims = entry.get_object( "animations" );
+                anims.allow_omitted_members();
+                for( const JsonMember member : anims ) {
+                    const JsonObject a = member.get_object();
+                    a.allow_omitted_members();
+                    voxelset_animation anim;
+                    anim.files = a.get_string_array( "files" );
+                    anim.fps = static_cast<float>( a.get_float( "fps", 8.0 ) );
+                    anim.loop = a.get_bool( "loop", member.name() != "death" );
+                    if( !anim.files.empty() ) {
+                        e.animations[member.name()] = anim;
+                    }
+                }
+            }
+            if( e.files.empty() && !e.animations.empty() ) {
+                const auto idle = e.animations.find( "idle" );
+                e.files = ( idle != e.animations.end() ? idle->second : e.animations.begin()->second ).files;
+            }
             if( e.files.empty() ) {
                 continue;
             }
+            e.mesh_height = static_cast<float>( entry.get_float( "mesh_height", 0.0 ) );
+            e.mesh_scale = static_cast<float>( entry.get_float( "mesh_scale", 1.0 ) );
             if( entry.has_array( "offset" ) ) {
                 const JsonArray off = entry.get_array( "offset" );
                 for( size_t i = 0; i < 3 && i < off.size(); ++i ) {
