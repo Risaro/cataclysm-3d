@@ -9,6 +9,7 @@
 #include <string>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <SDL3/SDL_timer.h>
@@ -1505,6 +1506,17 @@ class voxel_renderer
         std::vector<std::array<float, 4>> light_pos;
         std::vector<std::array<float, 3>> light_col;
         std::unordered_map<const void *, std::pair<int, uint64_t>> hp_track;
+        struct ghost {
+            vm_key key;
+            vec3 pos;
+            float yaw = 0.0f;
+            float scale = 1.0f;
+            float light = 1.0f;
+            const voxelset_entry *custom = nullptr;
+            uint64_t start = 0;
+        };
+        std::unordered_map<const void *, ghost> visible_monsters;
+        std::vector<ghost> dying;
         voxel_rgb flash_tint( const Creature &c );
         void add_light( const tripoint_bub_ms &p, float lift, float radius, float r, float g, float b );
         void upload_lights( GLuint program );
@@ -3061,6 +3073,11 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                                               palette_pick( shirt_palette(), h >> 5 ), static_cast<uint8_t>( h % 3 ), false ),
                        face_towards( p, you_pos ) );
     }
+    std::unordered_map<const void *, ghost> seen_monsters;
+    std::unordered_set<const void *> alive;
+    for( const monster &mon : g->all_monsters() ) {
+        alive.insert( &mon );
+    }
     for( const monster &mon : g->all_monsters() ) {
         const tripoint_bub_ms p = mon.pos_bub( here );
         if( !in_view( p ) || !you.sees( here, mon ) ) {
@@ -3074,9 +3091,16 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
                 continue;
             }
         }
-        add_at( main_lists, monster_key( mon ), mpos, voxel_size, face_towards( p, you_pos ),
-                creature_light( p ), 0.0f, size_scale( mon.get_size() ), flash_tint( mon ),
-                find_chain( vset, mon.type->id.str(), monster_looks_like ) );
+        ghost gh;
+        gh.key = monster_key( mon );
+        gh.pos = mpos;
+        gh.yaw = face_towards( p, you_pos );
+        gh.scale = size_scale( mon.get_size() );
+        gh.light = creature_light( p );
+        gh.custom = find_chain( vset, mon.type->id.str(), monster_looks_like );
+        seen_monsters[&mon] = gh;
+        add_at( main_lists, gh.key, mpos, voxel_size, gh.yaw, gh.light, 0.0f, gh.scale, flash_tint( mon ),
+                gh.custom );
     }
 
     for( auto it = motions.begin(); it != motions.end(); ) {
@@ -3086,6 +3110,28 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
             hp_track.erase( it->first );
             it = motions.erase( it );
         }
+    }
+
+    for( const std::pair<const void *const, ghost> &prev : visible_monsters ) {
+        if( !alive.count( prev.first ) ) {
+            ghost gh = prev.second;
+            gh.start = now_ms;
+            dying.push_back( gh );
+        }
+    }
+    visible_monsters = std::move( seen_monsters );
+    for( auto it = dying.begin(); it != dying.end(); ) {
+        const float t = static_cast<float>( now_ms - it->start ) / 450.0f;
+        if( t >= 1.0f ) {
+            it = dying.erase( it );
+            continue;
+        }
+        animating = true;
+        const float fade = 1.0f - t;
+        const voxel_rgb tint{ 255, static_cast<uint8_t>( 120 * fade ), static_cast<uint8_t>( 110 * fade ) };
+        add_at( main_lists, it->key, it->pos, voxel_size - t * t * level_height * 0.45f, it->yaw + t * 0.6f,
+                it->light, 0.0f, it->scale * ( 1.0f - 0.25f * t ), tint, it->custom );
+        ++it;
     }
 
     const weather_animation_t &anim = get_weather().weather_id->weather_animation;
