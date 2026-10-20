@@ -1372,8 +1372,69 @@ struct sprite_instance {
 enum sprite_mode : int {
     sprite_billboard = 0,
     sprite_flat = 1,
-    sprite_cube = 2
+    sprite_cube = 2,
+    sprite_cross = 3
 };
+
+float kind_height( vm_kind kind )
+{
+    switch( kind ) {
+        case vm_kind::table:
+        case vm_kind::sofa:
+        case vm_kind::crate:
+            return 0.75f;
+        case vm_kind::chair:
+        case vm_kind::counter:
+        case vm_kind::sink:
+        case vm_kind::stove:
+            return 1.0f;
+        case vm_kind::bed:
+            return 0.7f;
+        case vm_kind::bathtub:
+            return 0.6f;
+        case vm_kind::toilet:
+        case vm_kind::grave:
+            return 0.85f;
+        case vm_kind::cabinet:
+        case vm_kind::sign:
+            return 1.6f;
+        case vm_kind::screen:
+        case vm_kind::machine:
+        case vm_kind::hedge:
+            return 1.3f;
+        case vm_kind::barrel:
+        case vm_kind::dumpster:
+        case vm_kind::fence:
+        case vm_kind::stack:
+            return 1.1f;
+        case vm_kind::mat:
+        case vm_kind::splat:
+            return 0.05f;
+        case vm_kind::panel:
+            return 1.7f;
+        case vm_kind::pillar:
+            return 2.0f;
+        case vm_kind::mound:
+        case vm_kind::anvil:
+            return 0.6f;
+        case vm_kind::rubble:
+            return 0.35f;
+        case vm_kind::boulder:
+            return 0.8f;
+        case vm_kind::stairs_up:
+            return 1.0f;
+        default:
+            break;
+    }
+    return 0.8f;
+}
+
+bool kind_is_plant( vm_kind kind )
+{
+    return kind == vm_kind::tree || kind == vm_kind::pine || kind == vm_kind::dead_tree ||
+           kind == vm_kind::young_tree || kind == vm_kind::shrub || kind == vm_kind::flower ||
+           kind == vm_kind::tall_grass;
+}
 
 struct scene_key {
     tripoint_bub_ms center;
@@ -2447,6 +2508,28 @@ int voxel_renderer::voxelized_model( const sprite_ref &spr, sprite_mode mode, bo
 void voxel_renderer::add_sprite( sprite_mode mode, const sprite_ref &spr, const vec3 &pos, float yaw,
                                  float lift, float light, float desat, bool flip, float height, float layer )
 {
+    if( voxelized_style && mode == sprite_cross ) {
+        const int m = voxelized_model( spr, sprite_billboard, flip, height );
+        for( const float cross_yaw : { 0.0f, pi * 0.5f } ) {
+            instance inst{};
+            inst.x = pos.x;
+            inst.y = pos.y * level_height + spr.shift_y;
+            inst.z = pos.z;
+            inst.yaw = cross_yaw + yaw;
+            inst.r = 1.0f;
+            inst.g = 1.0f;
+            inst.b = 1.0f;
+            inst.light = light;
+            inst.scale = 1.0f;
+            inst.desat = desat;
+            inst.pad = 2.0f;
+            ( drawing_shadow ? shadow_lists : main_lists ).add( m, inst );
+        }
+        return;
+    }
+    if( mode == sprite_cross ) {
+        mode = sprite_billboard;
+    }
     if( voxelized_style ) {
         const int m = voxelized_model( spr, mode, flip, height );
         if( m >= 0 ) {
@@ -2557,7 +2640,13 @@ bool voxel_renderer::sprite_terrain( const tripoint_bub_ms &p, const std::string
         if( stand && cut && fg->h > 1.01f ) {
             return true;
         }
-        if( stand ) {
+        if( stand && voxelized_style ) {
+            if( kind_is_plant( st.kind ) || fg->h > 1.01f ) {
+                add_sprite( sprite_cross, *fg, pos, 0.0f, 0.0f, light, desat );
+            } else {
+                add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, kind_height( st.kind ) );
+            }
+        } else if( stand ) {
             add_sprite( sprite_billboard, *fg, pos, 0.0f, voxel_size, light, desat );
         } else {
             add_sprite( sprite_flat, *fg, pos, 0.0f, bg ? 0.008f : 0.004f, light, desat );
@@ -2576,6 +2665,12 @@ bool voxel_renderer::sprite_furniture( const tripoint_bub_ms &p, const std::stri
     const vec3 pos{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) };
     if( st.kind == vm_kind::mat || st.kind == vm_kind::splat ) {
         add_sprite( sprite_flat, *fg, pos, 0.0f, 0.012f, light, desat );
+    } else if( voxelized_style ) {
+        if( kind_is_plant( st.kind ) || fg->h > 1.01f ) {
+            add_sprite( sprite_cross, *fg, pos, 0.0f, 0.0f, light, desat );
+        } else {
+            add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, kind_height( st.kind ) );
+        }
     } else {
         add_sprite( sprite_billboard, *fg, pos, 0.0f, voxel_size, light, desat );
     }
