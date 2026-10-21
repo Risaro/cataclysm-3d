@@ -2692,7 +2692,7 @@ void options_manager::add_options_graphics()
 
         add( "VOXEL_DISTANT_TERRAIN", page_id, to_translation( "3D distant terrain" ),
              to_translation( "If true, explored land beyond the loaded map is drawn in a simplified form from the overmap." ),
-             true, COPT_CURSES_HIDE
+             false, COPT_CURSES_HIDE
            );
 
         get_option( "VOXEL_DISTANT_TERRAIN" ).setPrerequisite( "VOXEL_VIEW" );

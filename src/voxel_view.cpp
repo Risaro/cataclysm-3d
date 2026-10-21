@@ -1376,59 +1376,6 @@ enum sprite_mode : int {
     sprite_cross = 3
 };
 
-float kind_height( vm_kind kind )
-{
-    switch( kind ) {
-        case vm_kind::table:
-        case vm_kind::sofa:
-        case vm_kind::crate:
-            return 0.75f;
-        case vm_kind::chair:
-        case vm_kind::counter:
-        case vm_kind::sink:
-        case vm_kind::stove:
-            return 1.0f;
-        case vm_kind::bed:
-            return 0.7f;
-        case vm_kind::bathtub:
-            return 0.6f;
-        case vm_kind::toilet:
-        case vm_kind::grave:
-            return 0.85f;
-        case vm_kind::cabinet:
-        case vm_kind::sign:
-            return 1.6f;
-        case vm_kind::screen:
-        case vm_kind::machine:
-        case vm_kind::hedge:
-            return 1.3f;
-        case vm_kind::barrel:
-        case vm_kind::dumpster:
-        case vm_kind::fence:
-        case vm_kind::stack:
-            return 1.1f;
-        case vm_kind::mat:
-        case vm_kind::splat:
-            return 0.05f;
-        case vm_kind::panel:
-            return 1.7f;
-        case vm_kind::pillar:
-            return 2.0f;
-        case vm_kind::mound:
-        case vm_kind::anvil:
-            return 0.6f;
-        case vm_kind::rubble:
-            return 0.35f;
-        case vm_kind::boulder:
-            return 0.8f;
-        case vm_kind::stairs_up:
-            return 1.0f;
-        default:
-            break;
-    }
-    return 0.8f;
-}
-
 bool kind_is_plant( vm_kind kind )
 {
     return kind == vm_kind::tree || kind == vm_kind::pine || kind == vm_kind::dead_tree ||
@@ -1893,7 +1840,8 @@ void main()
     float g = dot( col, vec3( 0.299, 0.587, 0.114 ) );
     col = mix( col, vec3( g ) * vec3( 0.78, 0.86, 1.05 ), v_desat );
     float d = length( v_world.xz - u_focus.xz );
-    float fog = smoothstep( u_fog_far * 0.72, u_fog_far, d );
+    float fog = smoothstep( u_fog_far * 0.38, u_fog_far * 0.97, d );
+    fog = fog * fog * ( 1.6 - 0.6 * fog );
     col = mix( col, u_fog_color, fog );
     frag = vec4( col, u_alpha );
 }
@@ -2215,7 +2163,8 @@ void main()
     float g = dot( col, vec3( 0.299, 0.587, 0.114 ) );
     col = mix( col, vec3( g ) * vec3( 0.78, 0.86, 1.05 ), v_desat );
     float d = length( v_world.xz - u_focus.xz );
-    float fog = smoothstep( u_fog_far * 0.72, u_fog_far, d );
+    float fog = smoothstep( u_fog_far * 0.38, u_fog_far * 0.97, d );
+    fog = fog * fog * ( 1.6 - 0.6 * fog );
     frag = vec4( mix( col, u_fog_color, fog ), 1.0 );
 }
 )";
@@ -2428,18 +2377,97 @@ voxel_grid voxel_renderer::voxelize_sprite( const sprite_ref &spr, sprite_mode m
         }
         return g;
     }
+    int top = h;
+    int bottom = -1;
+    for( int y = 0; y < h; ++y ) {
+        for( int x = 0; x < w; ++x ) {
+            if( px( x, y ) ) {
+                top = std::min( top, y );
+                bottom = std::max( bottom, y );
+            }
+        }
+    }
+    if( bottom < 0 ) {
+        return voxel_grid( 1, 1, 1 );
+    }
+    const int span = bottom - top + 1;
+    if( mode == sprite_cross ) {
+        const float c = static_cast<float>( w - 1 ) * 0.5f;
+        voxel_grid g( w, span, w, ( w - tw ) / 2, ( w - tw ) / 2 );
+        for( int y = 0; y < span; ++y ) {
+            const int row = bottom - y;
+            for( int z = 0; z < w; ++z ) {
+                for( int x = 0; x < w; ++x ) {
+                    const float dx = static_cast<float>( x ) - c;
+                    const float dz = static_cast<float>( z ) - c;
+                    const float r = std::sqrt( dx * dx + dz * dz );
+                    if( r > c + 0.5f ) {
+                        continue;
+                    }
+                    const int sx = std::clamp( static_cast<int>( std::lround( c + ( dx + dz * 0.5f >= 0.0f ? r : -r ) ) ),
+                                               0, w - 1 );
+                    if( const uint8_t *p = px( sx, row ) ) {
+                        g.set( x, y, z, { p[0], p[1], p[2] } );
+                    }
+                }
+            }
+        }
+        return g;
+    }
     if( mode == sprite_cube ) {
-        const int gh = std::clamp( static_cast<int>( height * tw + 0.5f ), 1, 256 );
-        voxel_grid g( w, gh, h, ( w - tw ) / 2, ( h - tw ) / 2 );
-        for( int z = 0; z < h; ++z ) {
-            for( int x = 0; x < w; ++x ) {
-                const uint8_t *p = px( x, z );
+        const auto lum = []( const uint8_t *p ) {
+            return 0.3f * p[0] + 0.59f * p[1] + 0.11f * p[2];
+        };
+        int split = span * 4 < tw ? bottom : top + std::max( 1, static_cast<int>( span * 0.35f ) ) - 1;
+        if( split < bottom ) {
+            float best = 14.0f;
+            const int search_end = top + static_cast<int>( span * 0.6f );
+            for( int y = top + 1; y < search_end && y < bottom; ++y ) {
+                float sum = 0.0f;
+                int n = 0;
+                for( int x = 0; x < w; ++x ) {
+                    const uint8_t *a = px( x, y );
+                    const uint8_t *b = px( x, y + 1 );
+                    if( a && b ) {
+                        sum += std::abs( lum( a ) - lum( b ) );
+                        ++n;
+                    }
+                }
+                if( n > 0 && n * 4 >= w && sum / n > best ) {
+                    best = sum / n;
+                    split = y;
+                }
+            }
+        }
+        const int top_rows = split - top + 1;
+        const int front_rows = bottom - split;
+        const bool forced = height > 0.0f;
+        const int depth = forced ? tw : std::clamp( top_rows * 2, std::max( 2, tw / 4 ), tw );
+        const int gh = forced ? std::clamp( static_cast<int>( height * tw + 0.5f ), 1, 256 ) :
+                       std::max( 1, front_rows + 1 );
+        voxel_grid g( w, gh, depth, ( w - tw ) / 2, ( depth - tw ) / 2 );
+        for( int x = 0; x < w; ++x ) {
+            for( int y = 0; y + 1 < gh; ++y ) {
+                if( front_rows <= 0 ) {
+                    break;
+                }
+                const int row = bottom - std::min( front_rows - 1, y * front_rows / ( gh - 1 ) );
+                const uint8_t *p = px( x, row );
                 if( !p ) {
                     continue;
                 }
-                for( int y = 0; y < gh; ++y ) {
-                    const float shade = 0.72f + 0.28f * static_cast<float>( y ) / gh;
-                    g.set( x, y, z, voxel_shade( { p[0], p[1], p[2] }, y == gh - 1 ? 1.0f : shade ) );
+                for( int z = 0; z < depth; ++z ) {
+                    g.set( x, y, z, { p[0], p[1], p[2] } );
+                }
+            }
+            for( int z = 0; z < depth; ++z ) {
+                const int row = top + std::min( top_rows - 1, z * top_rows / depth );
+                const uint8_t *p = px( x, row );
+                if( !p && front_rows > 0 && z == depth - 1 ) {
+                    p = px( x, split + 1 );
+                }
+                if( p ) {
+                    g.set( x, gh - 1, z, { p[0], p[1], p[2] } );
                 }
             }
         }
@@ -2509,22 +2537,20 @@ void voxel_renderer::add_sprite( sprite_mode mode, const sprite_ref &spr, const 
                                  float lift, float light, float desat, bool flip, float height, float layer )
 {
     if( voxelized_style && mode == sprite_cross ) {
-        const int m = voxelized_model( spr, sprite_billboard, flip, height );
-        for( const float cross_yaw : { 0.0f, pi * 0.5f } ) {
-            instance inst{};
-            inst.x = pos.x;
-            inst.y = pos.y * level_height + spr.shift_y;
-            inst.z = pos.z;
-            inst.yaw = cross_yaw + yaw;
-            inst.r = 1.0f;
-            inst.g = 1.0f;
-            inst.b = 1.0f;
-            inst.light = light;
-            inst.scale = 1.0f;
-            inst.desat = desat;
-            inst.pad = 2.0f;
-            ( drawing_shadow ? shadow_lists : main_lists ).add( m, inst );
-        }
+        const int m = voxelized_model( spr, sprite_cross, flip, height );
+        instance inst{};
+        inst.x = pos.x;
+        inst.y = pos.y * level_height;
+        inst.z = pos.z;
+        inst.yaw = yaw;
+        inst.r = 1.0f;
+        inst.g = 1.0f;
+        inst.b = 1.0f;
+        inst.light = light;
+        inst.scale = 1.0f;
+        inst.desat = desat;
+        inst.pad = 2.0f;
+        ( drawing_shadow ? shadow_lists : main_lists ).add( m, inst );
         return;
     }
     if( mode == sprite_cross ) {
@@ -2644,7 +2670,7 @@ bool voxel_renderer::sprite_terrain( const tripoint_bub_ms &p, const std::string
             if( kind_is_plant( st.kind ) || fg->h > 1.01f ) {
                 add_sprite( sprite_cross, *fg, pos, 0.0f, 0.0f, light, desat );
             } else {
-                add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, kind_height( st.kind ) );
+                add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, 0.0f );
             }
         } else if( stand ) {
             add_sprite( sprite_billboard, *fg, pos, 0.0f, voxel_size, light, desat );
@@ -2669,7 +2695,7 @@ bool voxel_renderer::sprite_furniture( const tripoint_bub_ms &p, const std::stri
         if( kind_is_plant( st.kind ) || fg->h > 1.01f ) {
             add_sprite( sprite_cross, *fg, pos, 0.0f, 0.0f, light, desat );
         } else {
-            add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, kind_height( st.kind ) );
+            add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, 0.0f );
         }
     } else {
         add_sprite( sprite_billboard, *fg, pos, 0.0f, voxel_size, light, desat );
