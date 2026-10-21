@@ -6192,6 +6192,7 @@ static void CheckMessages()
     int imgui_buf_w = 0;
     int imgui_buf_h = 0;
     get_display_buffer_dims( &imgui_buf_w, &imgui_buf_h );
+    bool voxel_redraw = false;
     while( SDL_PollEvent( &ev ) ) {
         // Build a display_buffer-coord copy for ImGui and gameplay
         // consumers. The raw `ev` stays in window coordinates so android
@@ -6492,19 +6493,13 @@ static void CheckMessages()
                             const point rel( buf.x - tw->pos.x * fontwidth, buf.y - tw->pos.y * fontheight );
                             if( rel.x >= 0 && rel.y >= 0 && rel.x < size.x && rel.y < size.y &&
                                 voxel_view::hover_changed( rel, size ) ) {
-                                g->invalidate_main_ui_adaptor();
-                                ui_manager::redraw_invalidated();
-                                refresh_display();
+                                voxel_redraw = true;
                             }
                         }
                     }
                     if( voxel_dragging ) {
                         voxel_view::orbit( ev.motion.xrel, ev.motion.yrel );
-                        if( g ) {
-                            g->invalidate_main_ui_adaptor();
-                        }
-                        ui_manager::redraw_invalidated();
-                        refresh_display();
+                        voxel_redraw = true;
                         break;
                     }
                     if( ! mouse.enabled ) {
@@ -6863,6 +6858,13 @@ static void CheckMessages()
         if( text_refresh && !is_repeat ) {
             break;
         }
+    }
+    if( voxel_redraw ) {
+        if( g ) {
+            g->invalidate_main_ui_adaptor();
+        }
+        ui_manager::redraw_invalidated();
+        refresh_display();
     }
     if( needupdate ) {
         try_sdl_update();

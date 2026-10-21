@@ -1676,6 +1676,10 @@ class voxel_renderer
     public:
         bool animating = false;
         bool ambient = false;
+        bool scene_rebuilt = true;
+        bool shadow_ready = false;
+        mat4 shadow_vp;
+        uint64_t frame_ms = 0;
         std::optional<vec3> avatar_display;
 };
 
@@ -1766,8 +1770,8 @@ float light_visible( vec3 p, vec3 l )
     vec2 own = floor( p.xz );
     vec2 target = floor( l.xz );
     vec3 d = l - p;
-    for( int i = 1; i < 12; ++i ) {
-        vec3 q = p + d * ( float( i ) / 12.0 );
+    for( int i = 1; i < 7; ++i ) {
+        vec3 q = p + d * ( float( i ) / 7.0 );
         vec2 cell = floor( q.xz );
         if( cell == own || cell == target ) {
             continue;
@@ -2092,8 +2096,8 @@ float light_visible( vec3 p, vec3 l )
     vec2 own = floor( p.xz );
     vec2 target = floor( l.xz );
     vec3 d = l - p;
-    for( int i = 1; i < 12; ++i ) {
-        vec3 q = p + d * ( float( i ) / 12.0 );
+    for( int i = 1; i < 7; ++i ) {
+        vec3 q = p + d * ( float( i ) / 7.0 );
         vec2 cell = floor( q.xz );
         if( cell == own || cell == target ) {
             continue;
@@ -2369,17 +2373,6 @@ voxel_grid voxel_renderer::voxelize_sprite( const sprite_ref &spr, sprite_mode m
         const uint8_t *p = atlas.pixel( spr, flip ? w - 1 - x : x, y );
         return p && p[3] >= 128 ? p : nullptr;
     };
-    if( mode == sprite_flat ) {
-        voxel_grid g( w, 1, h, ( w - tw ) / 2, ( h - tw ) / 2 );
-        for( int y = 0; y < h; ++y ) {
-            for( int x = 0; x < w; ++x ) {
-                if( const uint8_t *p = px( x, y ) ) {
-                    g.set( x, 0, y, { p[0], p[1], p[2] } );
-                }
-            }
-        }
-        return g;
-    }
     int top = h;
     int bottom = -1;
     for( int y = 0; y < h; ++y ) {
@@ -2516,7 +2509,7 @@ int voxel_renderer::voxelized_model( const sprite_ref &spr, sprite_mode mode, bo
 void voxel_renderer::add_sprite( sprite_mode mode, const sprite_ref &spr, const vec3 &pos, float yaw,
                                  float lift, float light, float desat, bool flip, float height, float layer )
 {
-    if( voxelized_style ) {
+    if( voxelized_style && mode != sprite_flat ) {
         const int m = voxelized_model( spr, mode, flip, height );
         if( m >= 0 ) {
             instance inst{};
@@ -2525,9 +2518,6 @@ void voxel_renderer::add_sprite( sprite_mode mode, const sprite_ref &spr, const 
             if( mode == sprite_billboard ) {
                 inst.y = pos.y * level_height + lift + spr.shift_y;
                 inst.yaw = pi - cam.yaw;
-            } else if( mode == sprite_flat ) {
-                inst.y = pos.y * level_height + lift;
-                inst.yaw = yaw;
             } else {
                 inst.y = pos.y * level_height;
                 inst.yaw = 0.0f;
@@ -3387,9 +3377,7 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         const std::string tileset = get_option<std::string>( "TILES" );
         if( atlas.loaded_id != tileset ) {
             atlas.load( tileset );
-            voxelized_models.clear();
-            sprite_palettes.clear();
-    sprite_palettes.clear();
+            reset_models();
             cache_valid = false;
         }
         sprite_style = atlas.ok;
@@ -3423,9 +3411,10 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
 
     const tripoint_bub_ms you_pos = you.pos_bub( here );
     const scene_key key{ center, you_pos, here.get_abs_sub(), to_turns<int>( calendar::turn - calendar::turn_zero ),
-                         you.get_moves(), cam.yaw, cam.pitch, cam.mode, radius, daylight, vset_generation, sprite_style,
+                         you.get_moves(), std::round( cam.yaw / ( pi / 24.0f ) ), std::round( cam.pitch / ( pi / 36.0f ) ), cam.mode, radius, daylight, vset_generation, sprite_style,
                          cutaway, get_option<bool>( "VOXEL_UPPER_FLOORS" ), get_option<bool>( "VOXEL_LIGHT_SHADOWS" ) };
-    if( cache_valid && key == cached_key ) {
+    scene_rebuilt = !( cache_valid && key == cached_key );
+    if( !scene_rebuilt ) {
         main_lists = cached_main;
         shadow_lists = cached_shadow;
         sprite_batches = cached_sprites;
@@ -4541,6 +4530,7 @@ void voxel_renderer::apply_quality()
     const int wanted_shadow = q == "low" ? 1024 : q == "high" ? 4096 : 2048;
     if( wanted_shadow != shadow_size ) {
         shadow_size = wanted_shadow;
+        shadow_ready = false;
         gl.glBindTexture( GL_TEXTURE_2D, shadow_tex );
         gl.glTexImage2D( GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, shadow_size, shadow_size, 0,
                          GL_DEPTH_COMPONENT, GL_FLOAT, nullptr );
@@ -4565,6 +4555,7 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     if( failed || width <= 0 || height <= 0 ) {
         return false;
     }
+    const uint64_t frame_start = SDL_GetTicks();
     SDL_Window *prev_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext prev_context = SDL_GL_GetCurrentContext();
     if( !initialized ) {
@@ -4698,7 +4689,10 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     gl.glEnable( GL_CULL_FACE );
     gl.glCullFace( GL_BACK );
 
-    if( use_shadow ) {
+    const bool shadow_dirty = !shadow_ready || scene_rebuilt || animating || shadow_vp.m != light_vp.m;
+    if( use_shadow && shadow_dirty ) {
+        shadow_ready = true;
+        shadow_vp = light_vp;
         gl.glBindFramebuffer( GL_FRAMEBUFFER, shadow_fbo );
         gl.glViewport( 0, 0, shadow_size, shadow_size );
         gl.glClear( GL_DEPTH_BUFFER_BIT );
@@ -4854,6 +4848,7 @@ bool voxel_renderer::render( const tripoint_bub_ms &center, int width, int heigh
     gl.glPixelStorei( GL_PACK_ALIGNMENT, 1 );
     gl.glReadPixels( 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data() );
     gl.glBindFramebuffer( GL_FRAMEBUFFER, 0 );
+    frame_ms = SDL_GetTicks() - frame_start;
 
     if( prev_context ) {
         SDL_GL_MakeCurrent( prev_window, prev_context );
@@ -4930,11 +4925,12 @@ int animation_interval()
     if( !active() ) {
         return 0;
     }
+    const int cost = static_cast<int>( renderer().frame_ms );
     if( renderer().animating ) {
-        return 16;
+        return std::max( 16, cost * 3 / 2 );
     }
     if( renderer().ambient && get_option<bool>( "VOXEL_AMBIENT_ANIMATION" ) ) {
-        return 70;
+        return std::max( 70, cost * 2 );
     }
     return 0;
 }

@@ -2610,7 +2610,7 @@ void options_manager::add_options_graphics()
             { "4", no_translation( "4x" ) },
             { "8", no_translation( "8x" ) }
         },
-        "4", COPT_CURSES_HIDE
+        "2", COPT_CURSES_HIDE
            );
 
         get_option( "VOXEL_MSAA" ).setPrerequisite( "VOXEL_VIEW" );
