@@ -2447,10 +2447,10 @@ voxel_grid voxel_renderer::voxelize_sprite( const sprite_ref &spr, sprite_mode m
         return g;
     }
     std::vector<int> dist( static_cast<size_t>( w ) * h, 0 );
-    const int far = w + h;
+    const int far_dist = w + h;
     for( int y = 0; y < h; ++y ) {
         for( int x = 0; x < w; ++x ) {
-            dist[static_cast<size_t>( y ) * w + x] = px( x, y ) ? far : 0;
+            dist[static_cast<size_t>( y ) * w + x] = px( x, y ) ? far_dist : 0;
         }
     }
     for( int pass = 0; pass < 2; ++pass ) {
