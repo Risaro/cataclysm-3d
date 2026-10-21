@@ -1372,15 +1372,14 @@ struct sprite_instance {
 enum sprite_mode : int {
     sprite_billboard = 0,
     sprite_flat = 1,
-    sprite_cube = 2,
-    sprite_cross = 3
+    sprite_cube = 2
 };
 
-bool kind_is_plant( vm_kind kind )
+bool kind_has_shape( vm_kind kind )
 {
-    return kind == vm_kind::tree || kind == vm_kind::pine || kind == vm_kind::dead_tree ||
-           kind == vm_kind::young_tree || kind == vm_kind::shrub || kind == vm_kind::flower ||
-           kind == vm_kind::tall_grass;
+    return kind != vm_kind::floor && kind != vm_kind::furniture && kind != vm_kind::mat &&
+           kind != vm_kind::splat && kind != vm_kind::water && kind != vm_kind::hole &&
+           kind != vm_kind::stairs_down;
 }
 
 struct scene_key {
@@ -1551,6 +1550,10 @@ class voxel_renderer
         bool sprite_style = false;
         bool voxelized_style = false;
         std::unordered_map<uint64_t, int> voxelized_models;
+        std::unordered_map<int, std::pair<voxel_rgb, voxel_rgb>> sprite_palettes;
+        std::pair<voxel_rgb, voxel_rgb> sprite_palette( const sprite_ref &spr );
+        void add_shaped( const tile_style &st, const sprite_ref &spr, const tripoint_bub_ms &p, float light,
+                         float desat, bool furniture );
         int voxelized_model( const sprite_ref &spr, sprite_mode mode, bool flip, float height );
         voxel_grid voxelize_sprite( const sprite_ref &spr, sprite_mode mode, bool flip, float height ) const;
         bool cutaway = false;
@@ -2391,29 +2394,6 @@ voxel_grid voxel_renderer::voxelize_sprite( const sprite_ref &spr, sprite_mode m
         return voxel_grid( 1, 1, 1 );
     }
     const int span = bottom - top + 1;
-    if( mode == sprite_cross ) {
-        const float c = static_cast<float>( w - 1 ) * 0.5f;
-        voxel_grid g( w, span, w, ( w - tw ) / 2, ( w - tw ) / 2 );
-        for( int y = 0; y < span; ++y ) {
-            const int row = bottom - y;
-            for( int z = 0; z < w; ++z ) {
-                for( int x = 0; x < w; ++x ) {
-                    const float dx = static_cast<float>( x ) - c;
-                    const float dz = static_cast<float>( z ) - c;
-                    const float r = std::sqrt( dx * dx + dz * dz );
-                    if( r > c + 0.5f ) {
-                        continue;
-                    }
-                    const int sx = std::clamp( static_cast<int>( std::lround( c + ( dx + dz * 0.5f >= 0.0f ? r : -r ) ) ),
-                                               0, w - 1 );
-                    if( const uint8_t *p = px( sx, row ) ) {
-                        g.set( x, y, z, { p[0], p[1], p[2] } );
-                    }
-                }
-            }
-        }
-        return g;
-    }
     if( mode == sprite_cube ) {
         const auto lum = []( const uint8_t *p ) {
             return 0.3f * p[0] + 0.59f * p[1] + 0.11f * p[2];
@@ -2536,26 +2516,6 @@ int voxel_renderer::voxelized_model( const sprite_ref &spr, sprite_mode mode, bo
 void voxel_renderer::add_sprite( sprite_mode mode, const sprite_ref &spr, const vec3 &pos, float yaw,
                                  float lift, float light, float desat, bool flip, float height, float layer )
 {
-    if( voxelized_style && mode == sprite_cross ) {
-        const int m = voxelized_model( spr, sprite_cross, flip, height );
-        instance inst{};
-        inst.x = pos.x;
-        inst.y = pos.y * level_height;
-        inst.z = pos.z;
-        inst.yaw = yaw;
-        inst.r = 1.0f;
-        inst.g = 1.0f;
-        inst.b = 1.0f;
-        inst.light = light;
-        inst.scale = 1.0f;
-        inst.desat = desat;
-        inst.pad = 2.0f;
-        ( drawing_shadow ? shadow_lists : main_lists ).add( m, inst );
-        return;
-    }
-    if( mode == sprite_cross ) {
-        mode = sprite_billboard;
-    }
     if( voxelized_style ) {
         const int m = voxelized_model( spr, mode, flip, height );
         if( m >= 0 ) {
@@ -2602,6 +2562,63 @@ void voxel_renderer::add_sprite( sprite_mode mode, const sprite_ref &spr, const 
     sprite_batches[ { static_cast<int>( mode ), spr.sheet }].push_back( si );
 }
 
+std::pair<voxel_rgb, voxel_rgb> voxel_renderer::sprite_palette( const sprite_ref &spr )
+{
+    const auto it = sprite_palettes.find( spr.index );
+    if( it != sprite_palettes.end() ) {
+        return it->second;
+    }
+    std::unordered_map<int, std::array<int, 4>> buckets;
+    for( int y = 0; y < spr.ph; ++y ) {
+        for( int x = 0; x < spr.pw; ++x ) {
+            const uint8_t *p = atlas.pixel( spr, x, y );
+            if( !p || p[3] < 128 || p[0] + p[1] + p[2] < 84 ) {
+                continue;
+            }
+            std::array<int, 4> &b = buckets[( ( p[0] >> 4 ) << 8 ) | ( ( p[1] >> 4 ) << 4 ) | ( p[2] >> 4 )];
+            b[0] += p[0];
+            b[1] += p[1];
+            b[2] += p[2];
+            ++b[3];
+        }
+    }
+    const auto average = []( const std::array<int, 4> &b ) {
+        return voxel_rgb{ static_cast<uint8_t>( b[0] / b[3] ), static_cast<uint8_t>( b[1] / b[3] ), static_cast<uint8_t>( b[2] / b[3] ) };
+    };
+    std::pair<voxel_rgb, voxel_rgb> result{ rgb( 128, 128, 128 ), rgb( 90, 90, 90 ) };
+    int best = 0;
+    for( const auto &b : buckets ) {
+        if( b.second[3] > best ) {
+            best = b.second[3];
+            result.first = average( b.second );
+        }
+    }
+    result.second = voxel_shade( result.first, 0.7f );
+    int second = 0;
+    for( const auto &b : buckets ) {
+        const voxel_rgb c = average( b.second );
+        const int diff = std::abs( c.r - result.first.r ) + std::abs( c.g - result.first.g ) +
+                         std::abs( c.b - result.first.b );
+        if( diff > 60 && b.second[3] > second ) {
+            second = b.second[3];
+            result.second = c;
+        }
+    }
+    sprite_palettes.emplace( spr.index, result );
+    return result;
+}
+
+void voxel_renderer::add_shaped( const tile_style &st, const sprite_ref &spr, const tripoint_bub_ms &p,
+                                 float light, float desat, bool furniture )
+{
+    tile_style shaped = st;
+    const std::pair<voxel_rgb, voxel_rgb> colors = sprite_palette( spr );
+    shaped.color = colors.first;
+    shaped.color2 = colors.second;
+    shaped.overlay = false;
+    add_style( shaped, p, light, desat, furniture );
+}
+
 bool voxel_renderer::sprite_terrain( const tripoint_bub_ms &p, const std::string &id,
                                      const tile_style &st, float light, float desat )
 {
@@ -2632,6 +2649,10 @@ bool voxel_renderer::sprite_terrain( const tripoint_bub_ms &p, const std::string
             fg = conn;
             connect_yaw = static_cast<float>( extra ) * pi * 0.5f;
         }
+    }
+    if( solid && fg && voxelized_style ) {
+        add_shaped( st, *fg, p, light, desat, false );
+        return true;
     }
     if( solid && fg ) {
         const float h = ( st.kind == vm_kind::wall && st.param == 1 ) || cut ? level_height * 0.5f :
@@ -2666,12 +2687,10 @@ bool voxel_renderer::sprite_terrain( const tripoint_bub_ms &p, const std::string
         if( stand && cut && fg->h > 1.01f ) {
             return true;
         }
-        if( stand && voxelized_style ) {
-            if( kind_is_plant( st.kind ) || fg->h > 1.01f ) {
-                add_sprite( sprite_cross, *fg, pos, 0.0f, 0.0f, light, desat );
-            } else {
-                add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, 0.0f );
-            }
+        if( stand && voxelized_style && kind_has_shape( st.kind ) ) {
+            add_shaped( st, *fg, p, light, desat, false );
+        } else if( stand && voxelized_style ) {
+            add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, 0.0f );
         } else if( stand ) {
             add_sprite( sprite_billboard, *fg, pos, 0.0f, voxel_size, light, desat );
         } else {
@@ -2691,12 +2710,10 @@ bool voxel_renderer::sprite_furniture( const tripoint_bub_ms &p, const std::stri
     const vec3 pos{ static_cast<float>( p.x() ), static_cast<float>( p.z() ), static_cast<float>( p.y() ) };
     if( st.kind == vm_kind::mat || st.kind == vm_kind::splat ) {
         add_sprite( sprite_flat, *fg, pos, 0.0f, 0.012f, light, desat );
+    } else if( voxelized_style && kind_has_shape( st.kind ) ) {
+        add_shaped( st, *fg, p, light, desat, true );
     } else if( voxelized_style ) {
-        if( kind_is_plant( st.kind ) || fg->h > 1.01f ) {
-            add_sprite( sprite_cross, *fg, pos, 0.0f, 0.0f, light, desat );
-        } else {
-            add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, 0.0f );
-        }
+        add_sprite( sprite_cube, *fg, pos, 0.0f, 0.0f, light, desat, false, 0.0f );
     } else {
         add_sprite( sprite_billboard, *fg, pos, 0.0f, voxel_size, light, desat );
     }
@@ -3005,6 +3022,7 @@ void voxel_renderer::reset_models()
     model_lookup.clear();
     custom_lookup.clear();
     voxelized_models.clear();
+    sprite_palettes.clear();
     ter_styles.clear();
     furn_styles.clear();
     main_lists.per_model.clear();
@@ -3370,6 +3388,8 @@ void voxel_renderer::collect( const tripoint_bub_ms &center, int radius, float d
         if( atlas.loaded_id != tileset ) {
             atlas.load( tileset );
             voxelized_models.clear();
+            sprite_palettes.clear();
+    sprite_palettes.clear();
             cache_valid = false;
         }
         sprite_style = atlas.ok;
